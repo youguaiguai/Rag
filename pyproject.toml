@@ -1,0 +1,157 @@
+# ============================================================
+# pyproject.toml — 项目元数据、依赖与工具配置
+# ============================================================
+# 知识点：
+#   - PEP 518: 定义 pyproject.toml 为 Python 项目配置标准
+#   - PEP 621: 定义 [project] 表的标准化字段
+#   - src layout: 源码放在 src/ 下，防止意外导入未安装的包
+#   - [build-system]: 声明构建工具（这里用 hatchling）
+#   - [project.optional-dependencies]: 可选依赖组（dev/test 等）
+# ============================================================
+
+[build-system]
+# build-system 指定构建后端：
+#   - requires: 构建时需要的依赖（仅构建时，运行时不需要）
+#   - build-backend: 实际执行构建的 Python 对象
+# hatchling 是 Hatch 项目的构建后端，比 setuptools 更快更现代
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# 告诉 hatchling：包的源码在 src/ 目录下
+# 这样 pip install -e . 后，import mcp_server/core/... 才能正常工作
+packages = ["src/mcp_server", "src/core", "src/ingestion", "src/libs", "src/observability"]
+
+# -----------------------------------------------------------
+# [project] — PEP 621 标准的项目元数据
+# -----------------------------------------------------------
+[project]
+name = "smart-knowledge-hub"
+version = "0.1.0"
+description = "模块化 RAG + MCP Server：可插拔、可观测的智能知识检索框架"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "Developer" },
+]
+keywords = ["rag", "mcp", "hybrid-search", "vector-database", "llm"]
+
+# ---- 核心依赖（运行时必须） ----
+dependencies = [
+    # YAML 配置解析
+    "pyyaml>=6.0",
+    # Python MCP SDK — MCP 协议的实现
+    "mcp>=1.0.0",
+    # ChromaDB — 嵌入式向量数据库
+    "chromadb>=0.4.0",
+]
+
+# ---- 可选依赖组 ----
+# 通过 pip install -e ".[dev]" 安装开发依赖
+# 通过 pip install -e ".[all]" 安装所有可选依赖
+[project.optional-dependencies]
+# 开发依赖：测试、格式化、类型检查
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.1.0",
+]
+
+# OpenAI 系列 Provider
+openai = [
+    "openai>=1.0",
+]
+
+# Azure OpenAI Provider
+azure = [
+    "openai>=1.0",
+    "azure-identity>=1.0",
+]
+
+# Ollama 本地模型 Provider
+ollama = [
+    "ollama>=0.1.0",
+]
+
+# 文档处理
+doc-processing = [
+    # MarkItDown: Microsoft 的文档转 Markdown 工具
+    "markitdown>=0.1.0",
+    # LangChain 文本切分器
+    "langchain-text-splitters>=0.3.0",
+]
+
+# Reranker 支持
+reranker = [
+    # Sentence-Transformers: Cross-Encoder 重排模型
+    "sentence-transformers>=2.0",
+]
+
+# 评估框架
+evaluation = [
+    "ragas>=0.1.0",
+]
+
+# Dashboard 可视化
+dashboard = [
+    "streamlit>=1.30",
+    "plotly>=5.0",
+]
+
+# 一键安装所有可选依赖
+all = [
+    "smart-knowledge-hub[dev,openai,azure,ollama,doc-processing,reranker,evaluation,dashboard]",
+]
+
+# -----------------------------------------------------------
+# [project.scripts] — 命令行入口点
+# -----------------------------------------------------------
+# 安装后可直接在终端运行 `smart-knowledge-hub` 来启动 MCP Server
+# 等价于: python main.py
+[project.scripts]
+smart-knowledge-hub = "mcp_server.server:main"
+
+# -----------------------------------------------------------
+# [tool.pytest.ini_options] — pytest 配置
+# -----------------------------------------------------------
+[tool.pytest.ini_options]
+# testpaths: 指定 pytest 查找测试的目录
+testpaths = ["tests"]
+# markers: 自定义标记，用于分类测试用例
+markers = [
+    "unit: 单元测试（隔离、快速、无外部依赖）",
+    "integration: 集成测试（模块间交互）",
+    "e2e: 端到端测试（完整链路）",
+    "slow: 慢速测试（需要网络或大模型调用）",
+]
+# addopts: 默认附加选项
+#   -ra: 显示所有非通过的测试摘要
+#   -q: 安静模式（简化输出）
+#   --strict-markers: 未注册的 marker 报错而非警告
+addopts = "-ra -q --strict-markers"
+# pythonpath: 让 pytest 能正确 import src 下的包
+pythonpath = ["src"]
+
+# -----------------------------------------------------------
+# [tool.ruff] — 代码格式化与静态检查（替代 flake8 + black）
+# -----------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]  # 行长度由 formatter 处理
+
+# -----------------------------------------------------------
+# [tool.coverage] — 测试覆盖率配置
+# -----------------------------------------------------------
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true

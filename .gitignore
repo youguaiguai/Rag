@@ -1,107 +1,68 @@
-# Byte-compiled / optimized / DLL files
+# ============================================================
+# .gitignore — Git 版本控制忽略规则
+# ============================================================
+# 知识点：
+#   - .gitignore 的作用：告诉 Git 哪些文件不需要跟踪
+#   - 原则：只提交源码和配置，不提交生成物和敏感信息
+#   - 为什么不提交 .venv？虚拟环境体积大、平台相关、可随时重建
+#   - 为什么不提交 .env？包含 API Key 等敏感信息
+#   - 为什么不提交 __pycache__？字节码缓存，可随时重新生成
+# ============================================================
+
+# ---- Python 编译缓存 ----
+# __pycache__: Python 导入模块时自动生成的字节码缓存目录
+# *.pyc: 编译后的 Python 字节码文件
+# *.pyo: 优化编译的字节码
 __pycache__/
 *.py[cod]
 *$py.class
 
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-
-# Translations
-*.mo
-*.pot
-
-# Environments
-.env
-.venv
-env/
+# ---- 虚拟环境 ----
+# .venv: Python 虚拟环境目录
+# 虚拟环境包含 Python 解释器和所有安装的包
+# 不同操作系统/架构不兼容，体积大（通常 100MB+）
+# 正确做法：在目标机器上用 requirements.txt 或 pyproject.toml 重建
+.venv/
 venv/
 ENV/
-env.bak/
-venv.bak/
 
-# QA Test credentials and config backups
-config/test_credentials.yaml
-config/settings.yaml.qa_backup
-config/settings.yaml.bak
+# ---- 敏感信息 ----
+# .env: 环境变量文件，通常包含 API Key、密码等
+# 绝对不能提交到版本控制！这是最常见的安全泄露来源
+.env
+.env.*
 
-# IDE
+# ---- Python 打包产物 ----
+# 这些文件由 pip install / python -m build 自动生成
+# 不需要提交，因为可以随时重建
+*.egg-info/
+*.egg
+dist/
+build/
+
+# ---- 测试与覆盖率 ----
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ---- IDE 配置 ----
+# 每个开发者的 IDE 配置不同，不应强制统一
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-.project
-.pydevproject
-.settings/
-*.sublime-project
-*.sublime-workspace
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Ruff
-.ruff_cache/
-
-# Project-specific
+# ---- 运行时产物（数据、日志、缓存）----
+# 这些是程序运行后产生的文件，不属于源码
+# 每个环境独立生成，不需要同步
 data/
-cache/
 logs/
-*.log
-traces.jsonl
+cache/
 
-# Auto-coder skill cache
-.github/skills/auto-coder/.spec_hash
-
-# Secrets
-.env.local
-.env.*.local
-secrets.yaml
-nonexistent_traces.jsonl/
+# ---- OS 生成的文件 ----
+# macOS: .DS_Store 是 Finder 自动生成的目录元数据
+# Windows: Thumbs.db 是缩略图缓存
+.DS_Store
+Thumbs.db

@@ -1,0 +1,9 @@
+# requirements.txt — 依赖列表（兼容性备用）
+# 知识点：为什么同时有 pyproject.toml 和 requirements.txt？
+#   - pyproject.toml 是现代标准，pip install -e . 会自动读取
+#   - requirements.txt 是传统格式，部分工具/CI 只认这个
+#   - 实际安装推荐：pip install -e ".[dev]"
+#   - 本文件由 pyproject.toml 的 [project.dependencies] 生成
+
+pyyaml>=6.0
+chromadb>=0.4.0

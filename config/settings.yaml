@@ -1,0 +1,77 @@
+# ============================================================
+# config/settings.yaml — 项目主配置文件
+# ============================================================
+# 知识点：
+#   - 配置驱动设计：系统行为由配置决定，而非硬编码
+#   - YAML 优势：支持注释、层次结构、可读性最强
+#   - 环境变量替换：${VAR} 从环境变量读取，API Key 不写死
+#   - Fail-Fast 原则：启动时校验必填字段，缺失直接报错
+#   - A1 阶段：此文件仅作为"最小可解析配置"
+#     真正的配置加载逻辑在 A3 阶段实现
+# ============================================================
+
+# ---- LLM 配置 ----
+llm:
+  provider: openai           # azure | openai | ollama | deepseek
+  model: gpt-4o
+  api_key: "${OPENAI_API_KEY}"
+  # Azure 专用字段（provider=azure 时生效）
+  # azure_endpoint: "https://your-resource.openai.azure.com"
+  # deployment_name: "gpt-4o"
+  # api_version: "2024-02-15-preview"
+  # Ollama 专用字段（provider=ollama 时生效）
+  # base_url: "http://localhost:11434"
+
+# ---- Embedding 配置 ----
+embedding:
+  provider: openai           # openai | azure | ollama
+  model: text-embedding-3-small
+  dimensions: 1536
+  api_key: "${OPENAI_API_KEY}"
+
+# ---- Vision LLM 配置（图片描述生成）----
+vision_llm:
+  enabled: true
+  provider: openai           # openai | azure | ollama
+  model: gpt-4o
+  api_key: "${OPENAI_API_KEY}"
+
+# ---- 向量存储配置 ----
+vector_store:
+  backend: chroma            # chroma | qdrant | pinecone
+  persist_path: ./data/db/chroma
+
+# ---- 检索配置 ----
+retrieval:
+  sparse_backend: bm25       # bm25 | elasticsearch
+  fusion_algorithm: rrf       # rrf | weighted_sum
+  top_k_dense: 20
+  top_k_sparse: 20
+  top_k_final: 10
+
+# ---- 重排配置 ----
+rerank:
+  enabled: false              # 是否启用重排
+  backend: cross_encoder      # none | cross_encoder | llm
+  model: cross-encoder/ms-marco-MiniLM-L-6-v2
+  top_m: 30
+
+# ---- 评估配置 ----
+evaluation:
+  backends: [ragas, custom]
+  golden_test_set: ./tests/fixtures/golden_test_set.json
+
+# ---- 可观测性配置 ----
+observability:
+  enabled: true
+  log_file: ./logs/traces.jsonl
+  log_level: INFO
+  detail_level: standard      # minimal | standard | verbose
+
+# ---- Dashboard 管理平台配置 ----
+dashboard:
+  enabled: true
+  port: 8501
+  traces_dir: ./logs
+  auto_refresh: true
+  refresh_interval: 5
