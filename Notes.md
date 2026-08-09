@@ -1802,3 +1802,271 @@ splitter:
 | "为什么 Splitter 属性叫 provider_name 而非 model_name？" | Splitter 是策略而非模型，不涉及 AI 模型调用 |
 | "新增切分策略需要改什么？" | 1.实现 BaseSplitter 子类 2.在 _PROVIDERS 注册 或 调用 register() |
 | "separators 的作用？" | 递归切分的分隔符层级，从粗到细尝试（段落→行→词→字符），在长度限制内保持语义边界 |
+
+---
+
+## 12. B4：VectorStore 抽象接口与工厂（先定义契约）
+
+### 12.1 目标
+
+定义 `BaseVectorStore` 与 `VectorStoreFactory`，先不接真实 DB。用 FakeVectorStore 验证接口契约（输入输出 shape）。
+
+### 12.2 关键设计决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| 抽象基类 | ABC + @abstractmethod | 编译期约束子类必须实现 5 个核心方法 |
+| 工厂模式 | 简单工厂（映射表） | 与 B1/B2/B3 保持一致，后端数量少 |
+| 测试策略 | FakeVectorStore 测试桩 | 纯内存存储 + cosine similarity 纯 Python 计算 |
+| 接口完整度 | 一次定义 5 个方法 | upsert/query/delete/get_by_ids/delete_by_metadata，覆盖后续 C12/D2/D3/G2 全部需求 |
+| 数据契约 | VectorRecord + QueryResult | 用 dataclass 定义输入输出类型，类型安全 + IDE 补全 |
+| 幂等 upsert | dict 存储，key=id | 相同 id 覆盖旧记录，不产生重复 |
+| 查询算法 | cosine similarity | 不受向量长度影响，只关注方向 |
+| metadata 过滤 | AND 逻辑 | filter 中所有 key-value 对都必须精确匹配 |
+| 测试类型 | 契约测试（Contract Test） | 不测业务逻辑，只测接口输入输出 shape 是否符合约定 |
+
+### 12.3 关键接口签名（面试必须掌握）
+
+```python
+# ---- 数据契约 ----
+@dataclass
+class VectorRecord:
+    id: str                         # 记录唯一标识（chunk_id）
+    embedding: list[float]          # 向量
+    text: str                       # 原始文本
+    metadata: dict[str, Any]        # 元数据
+
+@dataclass
+class QueryResult:
+    id: str                         # 记录 ID
+    score: float                    # 相似度分数（cosine similarity）
+    text: str                       # 匹配的文本
+    metadata: dict[str, Any]        # 元数据
+
+# ---- 抽象基类 ----
+class BaseVectorStore(ABC):
+    @abstractmethod
+    def upsert(self, records: list[VectorRecord]) -> None
+        # 幂等写入：相同 id 覆盖旧记录
+
+    @abstractmethod
+    def query(self, vector: list[float], top_k: int = 10,
+              filters: dict | None = None) -> list[QueryResult]
+        # 向量相似度检索，按 score 降序返回 top_k 条
+
+    @abstractmethod
+    def delete(self, ids: list[str]) -> int
+        # 按 ID 删除，返回删除数量
+
+    @abstractmethod
+    def get_by_ids(self, ids: list[str]) -> list[dict]
+        # 按 ID 批量获取（不含向量）
+
+    @abstractmethod
+    def delete_by_metadata(self, filter: dict) -> int
+        # 按 metadata 批量删除
+
+# ---- 工厂 ----
+class VectorStoreFactory:
+    @classmethod
+    def create(cls, settings: VectorStoreSettings) -> BaseVectorStore
+    @classmethod
+    def register(cls, backend: str, store_class: type[BaseVectorStore]) -> None
+```
+
+### 12.4 数据流
+
+```
+---- Ingestion 阶段（写入）----
+Chunk → Embedding → VectorRecord(id, embedding, text, metadata)
+    │
+    ▼
+VectorStore.upsert([record1, record2, ...])
+    │  幂等写入：相同 id 覆盖
+    ▼
+存储到向量数据库（Fake=内存dict / Chroma=本地文件）
+
+---- Retrieval 阶段（查询）----
+Query → Embedding → query_vector
+    │
+    ▼
+VectorStore.query(query_vector, top_k=10, filters={"source": "doc.pdf"})
+    │  1. 过滤：metadata 匹配
+    │  2. 打分：cosine similarity
+    │  3. 排序：score 降序
+    │  4. 截断：取 top_k 条
+    ▼
+[QueryResult(id, score, text, metadata), ...]
+```
+
+### 12.5 核心设计模式详解
+
+**1. ABC（抽象基类）— 编译期约束**
+
+5 个抽象方法：`upsert` / `query` / `delete` / `get_by_ids` / `delete_by_metadata`，忘记实现任何一个都会 TypeError。
+
+**2. 简单工厂模式 — 配置驱动创建**
+
+```python
+_BACKENDS = {"fake": FakeVectorStore}  # 映射表
+VectorStoreFactory.register("chroma", ChromaStore)  # B7.6 注册
+```
+
+**3. 契约测试（Contract Testing）— 接口兼容性验证**
+
+```python
+# 契约测试不测逻辑，只测"形状"
+assert isinstance(results, list)           # 返回类型是 list
+assert all(isinstance(r, QueryResult) for r in results)  # 元素是 QueryResult
+assert hasattr(r, "id")                    # 有 id 字段
+assert hasattr(r, "score")                 # 有 score 字段
+assert isinstance(r.score, float)          # score 是 float
+```
+
+**4. 幂等 upsert 模式**
+
+```python
+# dict 存储，key=id → 相同 id 自动覆盖
+self._store[record.id] = record
+```
+
+### 12.6 VectorStore 核心知识点详解
+
+**1. 向量数据库的作用**
+
+| 功能 | 说明 |
+|------|------|
+| 存储 | 存储向量 + 原文 + metadata |
+| 检索 | 给一个查询向量，返回最相似的 K 条记录 |
+| 删除 | 按 ID 或 metadata 条件删除记录 |
+| 相似度 | cosine similarity（夹角余弦值） |
+
+**2. 为什么用 cosine similarity？**
+
+```python
+cos(A, B) = (A · B) / (||A|| * ||B||)
+# A · B = sum(a_i * b_i)  — 点积
+# ||A|| = sqrt(sum(a_i^2)) — 模长
+# 值域 [-1, 1]，越接近 1 越相似
+```
+
+| 度量方式 | 公式 | 特点 |
+|---------|------|------|
+| Cosine Similarity | cos(θ) | 不受向量长度影响，只关注方向 |
+| 欧氏距离 | √Σ(a-b)² | 受向量长度影响 |
+| 点积 | Σa·b | 受向量长度影响，但计算最快 |
+
+面试考点："为什么用 cosine？" → Embedding 向量通常已归一化（模长=1），此时 cosine = 点积，但 cosine 更通用。
+
+**3. 幂等 upsert 与 ID 生成策略**
+
+```python
+# ID 生成策略（C12 VectorUpserter 实现）
+chunk_id = hash(source_path + chunk_index + content_hash[:8])
+
+# 幂等性保证：
+# - 内容不变 → content_hash 不变 → id 不变 → upsert 覆盖（幂等）
+# - 内容变更 → content_hash 变化 → id 变化 → 新记录
+# - 文件名变更但内容不变 → content_hash 不变 → id 不变 → 复用（增量优化）
+```
+
+**4. metadata 过滤的作用**
+
+```python
+# 查询时只返回特定文档的 chunk
+store.query(vector, top_k=10, filters={"source_path": "doc.pdf"})
+
+# 多条件 AND 过滤
+store.query(vector, top_k=10, filters={"source": "doc.pdf", "page": 1})
+```
+
+应用场景：
+- 按文档过滤检索范围
+- 按页面/章节缩小检索
+- DocumentManager 按条件批量删除
+
+**5. 五个接口方法的用途与使用阶段**
+
+| 方法 | 用途 | 使用阶段 |
+|------|------|---------|
+| `upsert` | 写入/更新向量 | C12 (VectorUpserter) |
+| `query` | 向量相似度检索 | D2 (DenseRetriever) |
+| `delete` | 按 ID 删除 | G2 (DocumentManager) |
+| `get_by_ids` | 按 ID 获取原文 | D3 (SparseRetriever) |
+| `delete_by_metadata` | 按 metadata 批量删除 | G2 (DocumentManager) |
+
+### 12.7 契约测试 vs 单元测试
+
+| 维度 | 契约测试 | 单元测试 |
+|------|---------|---------|
+| 目的 | 验证接口输入输出 shape | 验证业务逻辑正确性 |
+| 关注点 | 类型对不对、字段全不全 | 结果对不对、排序对不对 |
+| 示例 | `assert isinstance(r, QueryResult)` | `assert r.score == 1.0` |
+| 价值 | 保证不同实现兼容同一接口 | 保证实现逻辑正确 |
+
+B4 的测试同时包含契约测试和单元测试：契约测试验证 VectorRecord/QueryResult 的字段，单元测试验证 cosine similarity 计算和幂等 upsert 逻辑。
+
+### 12.8 与 B1/B2/B3 的设计对比
+
+| 对比维度 | BaseLLM (B1) | BaseEmbedding (B2) | BaseSplitter (B3) | BaseVectorStore (B4) |
+|---------|-------------|-------------------|-------------------|---------------------|
+| 核心方法 | `chat()` | `embed()` | `split_text()` | `upsert()` + `query()` + `delete()` + `get_by_ids()` + `delete_by_metadata()` |
+| 方法数量 | 1 | 1 | 1 | 5 |
+| 入参 | `list[dict]` | `list[str]` | `str` | `list[VectorRecord]` / `list[float]` / `list[str]` / `dict` |
+| 返回值 | `str` | `list[list[float]]` | `list[str]` | `None` / `list[QueryResult]` / `int` / `list[dict]` |
+| 数据契约 | 无 | 无 | 无 | VectorRecord + QueryResult |
+| 只读属性 | `model_name` | `model_name` + `dimensions` | `provider_name` | 无（工厂属性是 backend_name） |
+| 测试桩 | FakeLLM（固定字符串） | FakeEmbedding（SHA256 向量） | FakeSplitter（定长切分） | FakeVectorStore（内存 dict + cosine） |
+| 异常类型 | LLMError | EmbeddingError | SplitterError | VectorStoreError |
+| 配置类 | LLMSettings | EmbeddingSettings | SplitterSettings | VectorStoreSettings |
+| 测试类型 | 单元测试 | 单元测试 | 单元测试 | 契约测试 + 单元测试 |
+
+**关键差异**：
+- VectorStore 是四个组件中**接口最复杂**的（5 个方法 + 2 个数据类型）
+- VectorStore 首次引入**数据契约**（VectorRecord / QueryResult），用 dataclass 明确输入输出 shape
+- VectorStore 首次使用**契约测试**，验证接口兼容性
+- FakeVectorStore 是最复杂的测试桩：需要实现 cosine similarity 计算
+
+### 12.9 测试覆盖
+
+| 测试类 | 用例数 | 覆盖场景 |
+|--------|--------|---------|
+| `TestBaseVectorStoreAbstract` | 4 | ABC 不能实例化、缺 upsert/query/完整实现 |
+| `TestVectorRecordContract` | 4 | 必需字段、metadata 默认值、实例独立性、字段类型 |
+| `TestQueryResultContract` | 3 | 必需字段、metadata 默认值、字段类型 |
+| `TestFakeVectorStoreUpsertContract` | 4 | 单条/多条/幂等/空列表 |
+| `TestFakeVectorStoreQueryContract` | 11 | 返回类型、字段完整、score 降序、top_k、空库、metadata 过滤、多条件、无匹配、score 值域、维度不匹配 |
+| `TestFakeVectorStoreDeleteContract` | 4 | 删除存在/不存在/部分/空列表 |
+| `TestFakeVectorStoreGetByIdsContract` | 5 | 返回 dict、字段完整、不含 embedding、不存在、部分匹配 |
+| `TestFakeVectorStoreDeleteByMetadataContract` | 3 | 返回数量、无匹配、多条件 AND |
+| `TestVectorStoreFactoryRouting` | 6 | fake 路由、可用、不支持、大小写、空格、空字符串 |
+| `TestVectorStoreFactoryRegister` | 3 | 注册自定义/非子类报错/覆盖已有 |
+| `TestCosineSimilarity` | 3 | 相同向量(1.0)/正交向量(0.0)/45度角(0.707) |
+
+### 12.10 修改文件清单
+
+| 文件 | 变更 |
+|------|------|
+| `src/libs/vector_store/base_vector_store.py` | **新增**：BaseVectorStore 抽象基类 + VectorRecord + QueryResult + VectorStoreError |
+| `src/libs/vector_store/vector_store_factory.py` | **新增**：FakeVectorStore 测试桩（内存存储+cosine）+ VectorStoreFactory 工厂 |
+| `src/libs/vector_store/__init__.py` | **更新**：导出 BaseVectorStore / VectorStoreError / VectorRecord / QueryResult / VectorStoreFactory / FakeVectorStore |
+| `tests/unit/test_vector_store_contract.py` | **新增**：49 个测试用例（契约测试 + 单元测试） |
+
+### 12.11 B4 面试高频问题
+
+| 问题 | 关键答案 |
+|------|---------|
+| "VectorStore 的作用？" | 存储向量 + 语义检索（cosine similarity）+ 按 ID/metadata 删除 |
+| "为什么用 Chroma？" | 嵌入式设计，pip install 即可，无需部署 Docker |
+| "upsert 和 insert 的区别？" | upsert 幂等，相同 id 覆盖；insert 可能产生重复 |
+| "cosine similarity 公式？" | cos(A,B) = (A·B) / (\|\|A\|\|·\|\|B\|\|)，值域 [-1,1] |
+| "为什么用 cosine 而非欧氏距离？" | 不受向量长度影响，只关注方向 |
+| "VectorRecord 包含哪些字段？" | id、embedding、text、metadata |
+| "QueryResult 包含哪些字段？" | id、score、text、metadata |
+| "get_by_ids 为什么不返回向量？" | 向量很大（1536维=6KB），批量返回浪费内存，调用方通常只需 text+metadata |
+| "delete_by_metadata 的用途？" | DocumentManager 删除文档时按 source_path 批量删除所有关联 chunk |
+| "什么是契约测试？" | 验证接口输入输出 shape（类型/字段），不测业务逻辑 |
+| "metadata 过滤逻辑？" | AND 逻辑，filter 中所有 key-value 对都必须精确匹配 |
+| "FakeVectorStore 如何计算相似度？" | 纯 Python 实现 cosine similarity，遍历所有记录计算点积和模长 |
+| "新增向量数据库后端需要改什么？" | 1.实现 BaseVectorStore 5 个方法 2.在 _BACKENDS 注册 或 调用 register() |
+| "维度不匹配时 cosine 怎么处理？" | 返回 0.0（不相似），避免数学错误 |
