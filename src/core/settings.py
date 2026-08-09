@@ -30,7 +30,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List
 
 import yaml
 
@@ -114,6 +114,22 @@ class VisionLLMSettings:
     azure_endpoint: str = ""
     deployment_name: str = ""
     base_url: str = ""
+
+
+@dataclass
+class SplitterSettings:
+    """Splitter 配置（文本切分策略）
+
+    接口签名：SplitterSettings(provider: str, chunk_size: int, chunk_overlap: int, separators: list[str])
+    关键字段：
+      - provider: 切分策略类型（recursive/semantic/fixed/fake）
+      - chunk_size: 每个 Chunk 的最大字符数
+      - chunk_overlap: 相邻 Chunk 之间的重叠字符数（保留上下文连续性）
+    """
+    provider: str = "recursive"
+    chunk_size: int = 1000
+    chunk_overlap: int = 200
+    separators: List[str] = field(default_factory=lambda: ["\n\n", "\n", " ", ""])
 
 
 @dataclass
@@ -225,6 +241,7 @@ class Settings:
     llm: LLMSettings = field(default_factory=LLMSettings)
     embedding: EmbeddingSettings = field(default_factory=EmbeddingSettings)
     vision_llm: VisionLLMSettings = field(default_factory=VisionLLMSettings)
+    splitter: SplitterSettings = field(default_factory=SplitterSettings)
     vector_store: VectorStoreSettings = field(default_factory=VectorStoreSettings)
     retrieval: RetrievalSettings = field(default_factory=RetrievalSettings)
     rerank: RerankSettings = field(default_factory=RerankSettings)
@@ -340,6 +357,7 @@ _FIELD_TYPE_MAP: dict[tuple[str, str], type] = {
     ("Settings", "rerank"): RerankSettings,
     ("Settings", "evaluation"): EvaluationSettings,
     ("Settings", "observability"): ObservabilitySettings,
+    ("Settings", "splitter"): SplitterSettings,
     ("Settings", "dashboard"): DashboardSettings,
 }
 

@@ -1519,3 +1519,286 @@ else:
 | "embed() 为什么接受 list 而非单个 str？" | 批量处理是 Embedding 的核心优化策略，减少网络开销 |
 | "向量值为什么要归一化？" | 使 cosine similarity 计算更稳定，不同向量的量级一致 |
 | "新增 Embedding Provider 需要改什么？" | 1.实现 BaseEmbedding 子类 2.在 _PROVIDERS 注册 或 调用 register() |
+
+---
+
+## 11. B3：Splitter 抽象接口与工厂
+
+### 11.1 目标
+
+定义 `BaseSplitter` 与 `SplitterFactory`，支持不同切分策略（Recursive/Semantic/Fixed）。用 Fake provider 验证工厂路由逻辑。
+
+### 11.2 关键设计决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| 抽象基类 | ABC + @abstractmethod | 编译期约束子类必须实现 split_text() 和 provider_name |
+| 工厂模式 | 简单工厂（映射表） | 与 B1/B2 保持一致，Provider 数量少，映射表够用 |
+| 测试策略 | FakeSplitter 测试桩 | 隔离测试，不依赖 LangChain 等外部库 |
+| split_text() 入参 | `str` 而非文件路径 | 单一职责：Splitter 只负责切分文本，文件读取由 Loader 负责 |
+| split_text() 返回值 | `list[str]` | 纯文本输入输出，不涉及业务对象（Document/Chunk 转换由 C4 DocumentChunker 负责） |
+| FakeSplitter 切分策略 | 定长切分 + 重叠 | 简化实现，按 chunk_size 切分，chunk_overlap 保留上下文 |
+| SplitterSettings 新增 | 添加到 Settings dataclass 树 | 配置驱动 chunk_size / chunk_overlap / provider / separators |
+| Provider 注册 | register() 方法 | 开放-封闭原则（OCP），与 B1/B2 工厂一致 |
+
+### 11.3 关键接口签名（面试必须掌握）
+
+```python
+# ---- 抽象基类 ----
+class BaseSplitter(ABC):
+    @abstractmethod
+    def split_text(self, text: str, **kwargs) -> list[str]
+        # 入参：text = 原始文本（如 Markdown 文档全文）
+        # 出参：切分后的文本片段列表（Chunk 列表）
+        # 异常：SplitterError
+
+    @property
+    @abstractmethod
+    def provider_name(self) -> str
+        # 返回当前切分策略名称（'recursive' / 'semantic' / 'fixed' / 'fake'）
+
+# ---- 工厂 ----
+class SplitterFactory:
+    @classmethod
+    def create(cls, settings: SplitterSettings) -> BaseSplitter
+        # provider → _PROVIDERS 映射表 → splitter_class(settings)
+
+    @classmethod
+    def register(cls, provider: str, splitter_class: type[BaseSplitter]) -> None
+        # 注册新策略，实现开放-封闭原则
+
+# ---- 测试桩 ----
+class FakeSplitter(BaseSplitter):
+    def __init__(self, settings: SplitterSettings)
+    def split_text(text, **kwargs) -> list[str]  # 定长切分 + 重叠
+
+# ---- 配置 ----
+@dataclass
+class SplitterSettings:
+    provider: str = "recursive"        # 切分策略类型
+    chunk_size: int = 1000             # 每个 Chunk 的最大字符数
+    chunk_overlap: int = 200           # 相邻 Chunk 的重叠字符数
+    separators: list[str] = ["\\n\\n", "\\n", " ", ""]  # 分隔符层级（Recursive 用）
+```
+
+### 11.4 数据流
+
+```
+settings.yaml (splitter.provider: "fake")
+    │
+    ▼
+SplitterSettings(provider="fake", chunk_size=1000, chunk_overlap=200)
+    │
+    ▼
+SplitterFactory.create(settings)
+    │  1. provider.lower().strip() → "fake"
+    │  2. _PROVIDERS["fake"] → FakeSplitter
+    │  3. FakeSplitter(settings) → 实例
+    ▼
+splitter: BaseSplitter = FakeSplitter 实例
+    │
+    ▼
+splitter.split_text("# 标题\n\n第一段...\n\n第二段...")
+    │  1. step = chunk_size - chunk_overlap = 1000 - 200 = 800
+    │  2. 按 step 步长滑动窗口切分
+    │  3. 每个 chunk 最多 chunk_size 字符
+    │  4. 相邻 chunk 有 chunk_overlap 字符的重叠
+    ▼
+["# 标题\n\n第一段...", "段...\n\n第二段..."]  # 2 个 chunk，有重叠
+```
+
+### 11.5 核心设计模式详解
+
+**1. ABC（抽象基类）— 编译期约束**
+
+```python
+class BaseSplitter(ABC):
+    @abstractmethod
+    def split_text(self, text, **kwargs) -> list[str]: ...
+# 忘记实现 split_text() → TypeError: Can't instantiate abstract class
+```
+
+与 B1 BaseLLM、B2 BaseEmbedding 完全一致的设计模式。
+
+**2. 简单工厂模式 — 配置驱动创建**
+
+```python
+_PROVIDERS = {"fake": FakeSplitter}  # 映射表代替 if/elif
+SplitterFactory.register("recursive", RecursiveSplitter)  # 新增策略不改 create()
+```
+
+**3. 测试桩（Test Stub）— 隔离外部依赖**
+
+```python
+# 真实 RecursiveSplitter：依赖 LangChain text-splitters 库
+# FakeSplitter：纯 Python 标准库实现，零外部依赖
+```
+
+**4. 异常转译模式**
+
+```python
+# LangChain SplitTextError → SplitterError
+# 上层只需 except SplitterError
+```
+
+### 11.6 Splitter 核心知识点详解
+
+**1. 为什么要切分（Chunking）？**
+
+| 原因 | 说明 |
+|------|------|
+| LLM 上下文有限 | GPT-4o 上下文 128K tokens，长文档超出限制 |
+| Embedding 有最大输入长度 | OpenAI text-embedding-3-small 最多 8192 tokens |
+| 检索粒度需要控制 | 整篇文档作为检索单元太粗，需要切分为语义单元 |
+| 成本优化 | 短文本 Embedding 成本更低 |
+
+**2. chunk_size 和 chunk_overlap 的作用**
+
+```python
+# chunk_size = 每个 Chunk 的最大字符数
+# chunk_overlap = 相邻 Chunk 之间的重叠字符数
+
+# 示例：text = "abcdefghij" (10 字符)
+# chunk_size=4, chunk_overlap=2
+# step = chunk_size - chunk_overlap = 2
+# 切分结果: ["abcd", "cdef", "efgh", "ghij", "ij"]
+#           ↑重叠↑  ↑重叠↑  ↑重叠↑  ↑重叠↑
+```
+
+**为什么要重叠？**
+- 语义连续性：如果关键信息恰好在切分边界，重叠保证它同时出现在两个 chunk 中
+- 检索质量：查询时能从相邻 chunk 获取更多上下文
+- 典型值：chunk_size=1000, chunk_overlap=200（重叠 20%）
+
+**3. 常见切分策略对比**
+
+| 策略 | 原理 | 优点 | 缺点 | 适用场景 |
+|------|------|------|------|---------|
+| 固定长度 | 按字符数机械切分 | 实现最简单 | 可能切断语义 | 快速原型 |
+| 递归字符 | 按分隔符层级（段落→句子→字符）递归切分 | 保持语义边界 | 需要配置分隔符 | Markdown/结构化文档（本项目默认） |
+| 语义切分 | 用 Embedding 相似度检测语义断点 | 语义完整性最好 | 需要 Embedding API，成本高 | 高质量检索场景 |
+| 结构感知 | 按文档结构（标题/代码块/列表）切分 | 保持文档结构 | 需要解析文档结构 | 代码/技术文档 |
+
+**4. 职责边界：libs.splitter vs DocumentChunker（C4）**
+
+| 组件 | 输入 | 输出 | 职责 |
+|------|------|------|------|
+| `libs.splitter` | `str` | `list[str]` | 纯文本切分，不涉及业务对象 |
+| `DocumentChunker` (C4) | `Document` 对象 | `list[Chunk]` 对象 | 业务适配器，添加 Chunk ID、元数据继承、图片分发等 |
+
+这种分离遵循**单一职责原则（SRP）**：libs.splitter 只管切文本，DocumentChunker 管业务对象转换。
+
+### 11.7 FakeSplitter 切分算法详解
+
+```python
+def split_text(self, text: str) -> list[str]:
+    if not text:
+        return []
+
+    # step = 每次前进的字符数
+    # overlap >= chunk_size 时 step <= 0，会导致死循环
+    # 此时退化为无重叠切分（step = chunk_size）
+    step = self._chunk_size - self._chunk_overlap
+    if step <= 0:
+        step = self._chunk_size
+
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + self._chunk_size
+        chunk = text[start:end]    # Python 切片自动处理越界
+        chunks.append(chunk)
+        start += step              # 前进 step 步
+
+    return chunks
+```
+
+**边界处理**：
+- 空字符串 → 返回空列表
+- 短文本（≤ chunk_size）→ 返回单元素列表
+- overlap >= chunk_size → 退化为无重叠切分（防止死循环）
+- chunk_overlap < 0 → 使用默认值 200
+
+### 11.8 与 B1 (BaseLLM) / B2 (BaseEmbedding) 的设计对比
+
+| 对比维度 | BaseLLM (B1) | BaseEmbedding (B2) | BaseSplitter (B3) |
+|---------|-------------|-------------------|-------------------|
+| 核心方法 | `chat(messages) -> str` | `embed(texts) -> list[list[float]]` | `split_text(text) -> list[str]` |
+| 入参 | `list[dict]`（消息列表） | `list[str]`（文本列表） | `str`（单个文本） |
+| 返回值 | `str`（文本） | `list[list[float]]`（向量矩阵） | `list[str]`（文本片段列表） |
+| 只读属性 | `model_name` | `model_name` + `dimensions` | `provider_name` |
+| 测试桩 | FakeLLM（返回固定字符串） | FakeEmbedding（SHA256 确定性向量） | FakeSplitter（定长切分+重叠） |
+| 异常类型 | LLMError | EmbeddingError | SplitterError |
+| 配置类 | LLMSettings | EmbeddingSettings | SplitterSettings（B3 新增） |
+| 设计模式 | ABC + 简单工厂 + register | ABC + 简单工厂 + register | ABC + 简单工厂 + register（完全一致） |
+
+**关键差异**：
+- LLM/Embedding 的属性叫 `model_name`（因为它们对接模型）；Splitter 的属性叫 `provider_name`（因为它是策略而非模型）
+- Splitter 是纯文本输入输出（`str → list[str]`），不涉及向量或 API 调用
+- FakeSplitter 最简单：不需要哈希或固定字符串，只是按字符位置切分
+
+### 11.9 SplitterSettings 配置详解
+
+B3 阶段新增 `SplitterSettings` 到 `settings.py`：
+
+```python
+@dataclass
+class SplitterSettings:
+    provider: str = "recursive"       # 切分策略类型
+    chunk_size: int = 1000            # 每个 Chunk 的最大字符数
+    chunk_overlap: int = 200          # 相邻 Chunk 的重叠字符数
+    separators: List[str] = field(default_factory=lambda: ["\n\n", "\n", " ", ""])
+```
+
+对应 YAML 配置：
+
+```yaml
+splitter:
+  provider: recursive        # recursive / semantic / fixed / fake
+  chunk_size: 1000           # 每个 Chunk 的最大字符数
+  chunk_overlap: 200         # 相邻 Chunk 的重叠字符数
+  separators:                # 递归切分的分隔符层级（从粗到细）
+    - "\n\n"                 # 段落分隔
+    - "\n"                   # 行分隔
+    - " "                    # 词分隔
+    - ""                     # 字符分隔（最后兜底）
+```
+
+**separators 的作用**（Recursive Splitter 用，B7.5 实现）：
+- 切分时按分隔符层级递归尝试：先按段落切 → 太长则按行切 → 再按词切 → 最后按字符切
+- 保证在 chunk_size 限制内尽量保持语义边界
+
+### 11.10 测试覆盖
+
+| 测试类 | 用例数 | 覆盖场景 |
+|--------|--------|---------|
+| `TestBaseSplitterAbstract` | 4 | ABC 不能实例化、缺 split_text/provider_name/完整实现 |
+| `TestFakeSplitter` | 13 | 短文本、长文本、重叠切分、上下文连续性、空字符串、整数倍、默认值、负值修正、overlap>=chunk_size 退化、provider_name、isinstance、内容完整性、单字符 |
+| `TestSplitterFactoryRouting` | 7 | fake 路由、split 可用、不支持 provider、错误信息、大小写、空格、空字符串 |
+| `TestSplitterFactoryRegister` | 3 | 注册自定义 Provider、非 BaseSplitter 子类报错、覆盖已有实现 |
+
+### 11.11 修改文件清单
+
+| 文件 | 变更 |
+|------|------|
+| `src/core/settings.py` | **更新**：新增 SplitterSettings dataclass + Settings 字段 + _FIELD_TYPE_MAP 映射 |
+| `src/libs/splitter/base_splitter.py` | **新增**：BaseSplitter 抽象基类 + SplitterError |
+| `src/libs/splitter/splitter_factory.py` | **新增**：FakeSplitter 测试桩 + SplitterFactory 工厂 |
+| `src/libs/splitter/__init__.py` | **更新**：导出 BaseSplitter / SplitterError / SplitterFactory / FakeSplitter |
+| `tests/unit/test_splitter_factory.py` | **新增**：27 个测试用例 |
+
+### 11.12 B3 面试高频问题
+
+| 问题 | 关键答案 |
+|------|---------|
+| "为什么要切分文档？" | LLM 上下文有限 + Embedding 有最大输入长度 + 检索粒度需要控制 + 成本优化 |
+| "chunk_size 和 chunk_overlap 的作用？" | chunk_size 控制每个片段最大长度；chunk_overlap 保留相邻片段的上下文连续性 |
+| "为什么要重叠？" | 防止关键信息被切断，保证语义连续性，典型值 chunk_size=1000 overlap=200（20%） |
+| "常见的切分策略？" | 固定长度 / 递归字符 / 语义切分 / 结构感知，本项目默认用 Recursive |
+| "split_text 为什么接受 str 而非文件路径？" | 单一职责原则，Splitter 只负责切分文本，文件读取由 Loader 负责 |
+| "libs.splitter 和 DocumentChunker 的区别？" | libs.splitter 是纯文本切分（str→list[str]）；DocumentChunker 是业务适配器（Document→list[Chunk]） |
+| "FakeSplitter 和 RecursiveSplitter 的区别？" | Fake 按字符位置机械切分；Recursive 按分隔符层级递归切分，保持语义边界 |
+| "overlap >= chunk_size 会怎样？" | 退化为无重叠切分（step=chunk_size），防止死循环 |
+| "为什么 Splitter 属性叫 provider_name 而非 model_name？" | Splitter 是策略而非模型，不涉及 AI 模型调用 |
+| "新增切分策略需要改什么？" | 1.实现 BaseSplitter 子类 2.在 _PROVIDERS 注册 或 调用 register() |
+| "separators 的作用？" | 递归切分的分隔符层级，从粗到细尝试（段落→行→词→字符），在长度限制内保持语义边界 |
