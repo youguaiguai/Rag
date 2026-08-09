@@ -1130,3 +1130,392 @@ if field_type is not None and isinstance(value, dict):
 | # | 优化项 | 来源 | 优先级 | 建议实现阶段 | 说明 |
 |---|--------|------|--------|------------|------|
 | 8 | 配置加载性能基准测试 | A3 | P3 | G+ | 测量 `load_settings()` 耗时，确保 < 100ms |
+
+---
+
+## 9. B1：LLM 抽象接口与工厂
+
+### 9.1 目标
+
+定义 `BaseLLM` 与 `LLMFactory`，支持按配置选择 LLM provider。用 Fake provider 验证工厂路由逻辑。
+
+### 9.2 关键设计决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| 抽象基类 | ABC + @abstractmethod | 编译期约束子类必须实现 chat() 和 model_name |
+| 工厂模式 | 简单工厂（映射表） | Provider 数量少，映射表够用 |
+| 测试策略 | FakeLLM 测试桩 | 隔离测试，不依赖真实 API，稳定可重复 |
+| chat() 返回值 | str（非自定义 Response） | YAGNI 原则，当前不需要 usage/finish_reason |
+| Provider 注册 | register() 方法 | 开放-封闭原则（OCP），新增 Provider 不改工厂代码 |
+
+### 9.3 关键接口签名（面试必须掌握）
+
+```python
+# ---- 抽象基类 ----
+class BaseLLM(ABC):
+    @abstractmethod
+    def chat(self, messages: list[dict], **kwargs) -> str
+        # 入参：messages=[{"role": "system"/"user"/"assistant", "content": "..."}]
+        # 出参：LLM 生成的文本字符串
+        # 异常：LLMError
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str
+        # 返回当前模型名称，用于日志和追踪
+
+# ---- 工厂 ----
+class LLMFactory:
+    @classmethod
+    def create(cls, settings: LLMSettings) -> BaseLLM
+        # provider → _PROVIDERS 映射表 → llm_class(settings)
+
+    @classmethod
+    def register(cls, provider: str, llm_class: type[BaseLLM]) -> None
+        # 注册新 Provider，实现开放-封闭原则
+
+# ---- 测试桩 ----
+class FakeLLM(BaseLLM):
+    def __init__(self, settings: LLMSettings, response: str = "fake response")
+    def chat(messages, **kwargs) -> str  # 返回预设 response
+```
+
+### 9.4 数据流
+
+```
+settings.yaml (provider: "fake")
+    │
+    ▼
+LLMSettings(provider="fake", model="fake-model")
+    │
+    ▼
+LLMFactory.create(settings)
+    │  1. provider.lower().strip() → "fake"
+    │  2. _PROVIDERS["fake"] → FakeLLM
+    │  3. FakeLLM(settings) → 实例
+    ▼
+llm: BaseLLM = FakeLLM 实例
+    │
+    ▼
+llm.chat([{"role": "user", "content": "hello"}]) → "fake response"
+```
+
+### 9.5 核心设计模式详解
+
+**1. ABC（抽象基类）— 编译期约束**
+
+```python
+class BaseLLM(ABC):
+    @abstractmethod
+    def chat(self, messages, **kwargs) -> str: ...
+# 忘记实现 chat() → TypeError: Can't instantiate abstract class
+```
+
+**2. 简单工厂模式 — 配置驱动创建**
+
+```python
+_PROVIDERS = {"fake": FakeLLM}  # 映射表代替 if/elif
+LLMFactory.register("openai", OpenAILLM)  # 新增 Provider 不改 create()
+```
+
+**3. 测试桩（Test Stub）— 隔离外部依赖**
+
+```python
+# 真实 API：网络请求 + 费用 + 不稳定
+# FakeLLM：本地 + 免费 + 确定性输出
+```
+
+**4. 异常转译模式**
+
+```python
+# openai.APIConnectionError → LLMError
+# azure.AuthenticationError → LLMError
+# 上层只需 except LLMError
+```
+
+### 9.6 messages 格式详解
+
+```python
+messages = [
+    {"role": "system", "content": "你是 RAG 助手"},      # 系统提示词
+    {"role": "user", "content": "什么是向量数据库？"},     # 用户输入
+    {"role": "assistant", "content": "向量数据库是..."},   # AI 回复
+    {"role": "user", "content": "有什么优势？"},          # 追问
+]
+# 所有 Provider 都兼容此 OpenAI Chat Completion API 标准格式
+```
+
+### 9.7 Bug 修复记录
+
+**Bug：register 测试中自定义 LLM 类的 `__init__` 不接受 settings 参数**
+
+- **现象**：`TypeError: CustomLLM() takes no arguments`
+- **根因**：`LLMFactory.create()` 统一调用 `llm_class(settings)`，测试中的 CustomLLM 没定义 `__init__(self, settings)`
+- **修复**：所有通过工厂创建的 BaseLLM 子类必须接受 `settings: LLMSettings` 参数
+- **设计约束**：工厂模式的隐式契约 — 所有实现类的构造函数签名必须一致
+
+### 9.8 测试覆盖
+
+| 测试类 | 用例数 | 覆盖场景 |
+|--------|--------|---------|
+| `TestBaseLLMAbstract` | 4 | ABC 不能实例化、缺 chat/缺 model_name/完整实现 |
+| `TestFakeLLM` | 6 | 默认回复、自定义回复、model_name、isinstance、忽略 messages |
+| `TestLLMFactoryRouting` | 7 | fake 路由、chat 可用、不支持的 provider、大小写、空格、空字符串 |
+| `TestLLMFactoryRegister` | 3 | 注册自定义 Provider、非 BaseLLM 子类报错、覆盖已有实现 |
+
+### 9.9 修改文件清单
+
+| 文件 | 变更 |
+|------|------|
+| `src/libs/llm/base_llm.py` | **新增**：BaseLLM 抽象基类 + LLMError + MessageType |
+| `src/libs/llm/llm_factory.py` | **新增**：FakeLLM 测试桩 + LLMFactory 工厂 |
+| `tests/unit/test_llm_factory.py` | **新增**：20 个测试用例 |
+
+### 9.10 B1 面试高频问题
+
+| 问题 | 关键答案 |
+|------|---------|
+| "ABC 的作用？" | 编译期约束 + 类型安全 + 接口契约，忘记实现会 TypeError |
+| "简单工厂 vs 工厂方法？" | 产品少用简单工厂，多用工厂方法；本项目用映射表实现简单工厂 |
+| "FakeLLM 和 MockLLM 的区别？" | Fake 返回固定值（测试桩）；Mock 记录调用并验证（模拟对象） |
+| "工厂模式的好处？" | 改配置不改代码 + 上层只依赖接口 + 新增 Provider 不改工厂 |
+| "什么是异常转译模式？" | 将底层异常包装为领域异常，上层代码不依赖底层异常类型 |
+| "YAGNI 原则？" | You Aren't Gonna Need It，不要提前设计不需要的功能 |
+| "开放-封闭原则？" | 对扩展开放（register 新 Provider），对修改封闭（不改 create） |
+| "新增 LLM Provider 需要改什么？" | 1.实现 BaseLLM 子类 2.在 _PROVIDERS 注册 或 调用 register() |
+
+---
+
+## 10. B2：Embedding 抽象接口与工厂
+
+### 10.1 目标
+
+定义 `BaseEmbedding` 与 `EmbeddingFactory`，支持批量 embed。用 Fake provider 验证工厂路由逻辑。
+
+### 10.2 关键设计决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| 抽象基类 | ABC + @abstractmethod | 编译期约束子类必须实现 embed()、model_name、dimensions |
+| 工厂模式 | 简单工厂（映射表） | Provider 数量少，映射表够用，与 B1 LLM 工厂保持一致 |
+| 测试策略 | FakeEmbedding 测试桩 | 隔离测试，不依赖真实 API，稳定可重复 |
+| embed() 入参 | list[str] 而非单个 str | 批量处理是 Embedding 的核心优化，减少 API 调用次数 |
+| embed() 返回值 | list[list[float]] | 标准向量格式，与 NumPy / ChromaDB 等兼容 |
+| FakeEmbedding 向量生成 | SHA256 哈希 → 确定性向量 | 相同文本 → 相同向量（可重复测试），不同文本 → 不同向量 |
+| Provider 注册 | register() 方法 | 开放-封闭原则（OCP），与 B1 LLMFactory 一致 |
+| dimensions 属性 | @property + @abstractmethod | 编译期约束子类必须暴露维度，用于校验与日志 |
+
+### 10.3 关键接口签名（面试必须掌握）
+
+```python
+# ---- 抽象基类 ----
+class BaseEmbedding(ABC):
+    @abstractmethod
+    def embed(self, texts: list[str], **kwargs) -> list[list[float]]
+        # 入参：texts=["什么是向量数据库？", "RAG 是什么？"]
+        # 出参：向量列表，每个向量是 list[float]，维度由模型决定
+        # 异常：EmbeddingError
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str
+        # 返回当前模型名称，用于日志和追踪
+
+    @property
+    @abstractmethod
+    def dimensions(self) -> int
+        # 返回向量维度（如 text-embedding-3-small = 1536）
+        # 维度必须与向量数据库 collection 配置一致
+
+# ---- 工厂 ----
+class EmbeddingFactory:
+    @classmethod
+    def create(cls, settings: EmbeddingSettings) -> BaseEmbedding
+        # provider → _PROVIDERS 映射表 → embedding_class(settings)
+
+    @classmethod
+    def register(cls, provider: str, embedding_class: type[BaseEmbedding]) -> None
+        # 注册新 Provider，实现开放-封闭原则
+
+# ---- 测试桩 ----
+class FakeEmbedding(BaseEmbedding):
+    def __init__(self, settings: EmbeddingSettings)
+    def embed(texts, **kwargs) -> list[list[float]]  # SHA256 哈希生成确定性向量
+```
+
+### 10.4 数据流
+
+```
+settings.yaml (provider: "fake")
+    │
+    ▼
+EmbeddingSettings(provider="fake", model="fake-model", dimensions=128)
+    │
+    ▼
+EmbeddingFactory.create(settings)
+    │  1. provider.lower().strip() → "fake"
+    │  2. _PROVIDERS["fake"] → FakeEmbedding
+    │  3. FakeEmbedding(settings) → 实例
+    ▼
+embedding: BaseEmbedding = FakeEmbedding 实例
+    │
+    ▼
+embedding.embed(["hello", "world"])
+    │  1. 对每个文本取 SHA256 哈希
+    │  2. 哈希字节 → 归一化到 [-1, 1] 浮点数
+    │  3. 截断/填充到 dimensions 维度
+    ▼
+[[0.01, -0.03, ...], [0.05, 0.02, ...]]  # 2 个向量，每个 128 维
+```
+
+### 10.5 核心设计模式详解
+
+**1. ABC（抽象基类）— 编译期约束**
+
+```python
+class BaseEmbedding(ABC):
+    @abstractmethod
+    def embed(self, texts, **kwargs) -> list[list[float]]: ...
+# 忘记实现 embed() → TypeError: Can't instantiate abstract class
+```
+
+与 B1 的 BaseLLM 完全一致的设计模式，三个抽象方法：`embed()`、`model_name`、`dimensions`。
+
+**2. 简单工厂模式 — 配置驱动创建**
+
+```python
+_PROVIDERS = {"fake": FakeEmbedding}  # 映射表代替 if/elif
+EmbeddingFactory.register("openai", OpenAIEmbedding)  # 新增 Provider 不改 create()
+```
+
+**3. 测试桩（Test Stub）— 隔离外部依赖**
+
+```python
+# 真实 API：网络请求 + 费用 + 不稳定
+# FakeEmbedding：本地 + 免费 + 确定性输出（SHA256 哈希）
+```
+
+FakeEmbedding 与 FakeLLM 的区别：FakeLLM 返回固定字符串；FakeEmbedding 基于文本内容生成不同的确定性向量。
+
+**4. 异常转译模式**
+
+```python
+# openai.APIConnectionError → EmbeddingError
+# azure.AuthenticationError → EmbeddingError
+# 上层只需 except EmbeddingError
+```
+
+### 10.6 Embedding 核心知识点详解
+
+**1. Embedding 是什么？**
+
+Embedding 是将文本映射为高维浮点向量的过程。语义相近的文本在向量空间中距离更近，这是 Dense Retrieval（稠密检索）的基础。
+
+- 输入：`"什么是向量数据库？"`（字符串）
+- 输出：`[0.012, -0.034, 0.056, ..., 0.078]`（1536 维浮点向量）
+- 核心：语义相似的文本 → 向量距离近（cosine similarity 高）
+
+**2. 为什么要批量 embed？**
+
+| 方式 | API 调用次数 | 网络开销 | 成本 |
+|------|------------|---------|------|
+| 逐条 embed | N 次 | N 次网络往返 | 高 |
+| 批量 embed | 1 次（或 N/batch_size 次） | 1 次网络往返 | 低 |
+
+OpenAI / Azure / Ollama 等 API 都原生支持批量 embed，一次请求最多处理 2048 个文本（OpenAI 限制）。
+
+**3. dimensions 为什么重要？**
+
+不同 Embedding 模型输出维度不同：
+- `text-embedding-3-small`：1536 维
+- `text-embedding-3-large`：3072 维
+- `text-embedding-ada-002`：1536 维
+- Ollama `nomic-embed-text`：768 维
+
+向量维度必须与向量数据库的 collection 配置一致，否则写入或检索会失败。
+
+**4. 向量值域与归一化**
+
+真实 Embedding 模型输出的向量值通常在 [-1, 1] 范围内，并经过 L2 归一化（向量的模长为 1）。FakeEmbedding 模拟了这个行为，将 SHA256 哈希字节映射到 [-1, 1] 区间。
+
+**5. 稠密向量 vs 稀疏向量**
+
+| 类型 | 生成方式 | 特点 | 适用场景 |
+|------|---------|------|---------|
+| 稠密向量 (Dense) | Embedding 模型（OpenAI/BGE） | 高维浮点（1536维），捕获语义 | 语义检索（同义词、模糊表达） |
+| 稀疏向量 (Sparse) | BM25 / SPLADE | 关键词权重向量，大部分维度为 0 | 精确匹配（专有名词） |
+
+本项目采用双路编码（Dense + Sparse），在检索阶段通过 RRF 融合两路结果。
+
+### 10.7 FakeEmbedding 确定性向量生成策略
+
+```python
+# 1. 对文本取 SHA256 哈希 → 32 字节确定性序列
+hash_bytes = hashlib.sha256(text.encode("utf-8")).digest()
+
+# 2. 字节映射为浮点数，归一化到 [-1, 1]
+# 每个 byte (0-255) → (byte - 128) / 128.0 → [-1, 1)
+raw_floats = [(b - 128) / 128.0 for b in hash_bytes]
+
+# 3. 扩展或截断到目标维度
+# SHA256 只有 32 字节，如果 dimensions=1536，需要循环填充
+if len(raw_floats) >= dimensions:
+    vector = raw_floats[:dimensions]
+else:
+    vector = (raw_floats * (dimensions // len(raw_floats) + 1))[:dimensions]
+```
+
+为什么用 SHA256 而不是随机数？
+- **确定性**：相同文本 → 相同向量，测试可重复
+- **区分性**：不同文本 → 不同向量（哈希碰撞概率极低）
+- **零依赖**：Python 标准库 hashlib，不需要额外安装
+
+### 10.8 与 B1 (BaseLLM) 的设计对比
+
+| 对比维度 | BaseLLM (B1) | BaseEmbedding (B2) |
+|---------|-------------|-------------------|
+| 核心方法 | `chat(messages) -> str` | `embed(texts) -> list[list[float]]` |
+| 入参 | `list[dict]`（消息列表） | `list[str]`（文本列表） |
+| 返回值 | `str`（文本） | `list[list[float]]`（向量列表） |
+| 只读属性 | `model_name` | `model_name` + `dimensions` |
+| 测试桩 | FakeLLM（返回固定字符串） | FakeEmbedding（返回确定性向量） |
+| 异常类型 | LLMError | EmbeddingError |
+| 工厂类 | LLMFactory | EmbeddingFactory |
+| 设计模式 | ABC + 简单工厂 + register | ABC + 简单工厂 + register（完全一致） |
+
+相同点：ABC 约束、简单工厂映射表、register() 开放-封闭、异常转译、Fake 测试桩
+不同点：Embedding 多了 `dimensions` 属性（因为向量维度是关键约束）；FakeEmbedding 需要生成向量而非固定字符串
+
+### 10.9 测试覆盖
+
+| 测试类 | 用例数 | 覆盖场景 |
+|--------|--------|---------|
+| `TestBaseEmbeddingAbstract` | 5 | ABC 不能实例化、缺 embed/model_name/dimensions/完整实现 |
+| `TestFakeEmbedding` | 14 | 返回向量、维度正确、确定性、不同文本不同向量、空列表、批量、值域范围、高维度填充、model_name、dimensions 属性 |
+| `TestEmbeddingFactoryRouting` | 7 | fake 路由、embed 可用、不支持 provider、错误信息、大小写、空格、空字符串 |
+| `TestEmbeddingFactoryRegister` | 3 | 注册自定义 Provider、非 BaseEmbedding 子类报错、覆盖已有实现 |
+
+### 10.10 修改文件清单
+
+| 文件 | 变更 |
+|------|------|
+| `src/libs/embedding/base_embedding.py` | **新增**：BaseEmbedding 抽象基类 + EmbeddingError |
+| `src/libs/embedding/embedding_factory.py` | **新增**：FakeEmbedding 测试桩 + EmbeddingFactory 工厂 |
+| `src/libs/embedding/__init__.py` | **更新**：导出 BaseEmbedding / EmbeddingError / EmbeddingFactory / FakeEmbedding |
+| `tests/unit/test_embedding_factory.py` | **新增**：29 个测试用例 |
+
+### 10.11 B2 面试高频问题
+
+| 问题 | 关键答案 |
+|------|---------|
+| "Embedding 的作用？" | 将文本转为高维向量，使语义相似的文本距离更近，是稠密检索的基础 |
+| "为什么要批量 embed？" | 减少 API 调用次数，降低成本和延迟，OpenAI 单次最多 2048 个文本 |
+| "text-embedding-3-small 的维度？" | 1536 维 |
+| "dimensions 不匹配会怎样？" | 向量写入或检索失败，维度必须与 collection 配置一致 |
+| "稠密向量和稀疏向量区别？" | 稠密是高维浮点捕获语义；稀疏是关键词权重捕获精确匹配 |
+| "FakeEmbedding 为什么用 SHA256？" | 确定性（相同文本→相同向量）+ 区分性（不同文本→不同向量）+ 零依赖 |
+| "BaseEmbedding 和 BaseLLM 的设计区别？" | Embedding 多了 dimensions 属性；FakeEmbedding 生成向量而非返回固定字符串 |
+| "embed() 为什么接受 list 而非单个 str？" | 批量处理是 Embedding 的核心优化策略，减少网络开销 |
+| "向量值为什么要归一化？" | 使 cosine similarity 计算更稳定，不同向量的量级一致 |
+| "新增 Embedding Provider 需要改什么？" | 1.实现 BaseEmbedding 子类 2.在 _PROVIDERS 注册 或 调用 register() |
