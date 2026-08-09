@@ -2070,3 +2070,136 @@ B4 的测试同时包含契约测试和单元测试：契约测试验证 VectorR
 | "FakeVectorStore 如何计算相似度？" | 纯 Python 实现 cosine similarity，遍历所有记录计算点积和模长 |
 | "新增向量数据库后端需要改什么？" | 1.实现 BaseVectorStore 5 个方法 2.在 _BACKENDS 注册 或 调用 register() |
 | "维度不匹配时 cosine 怎么处理？" | 返回 0.0（不相似），避免数学错误 |
+
+---
+
+## 13. B5: Reranker 抽象接口与工厂
+
+### 13.1 任务概述
+
+**目标**：实现 `BaseReranker`、`RerankerFactory`，提供 `NoneReranker` 作为默认回退。
+
+**修改文件**：
+- `src/libs/reranker/base_reranker.py` — 抽象基类 + 数据契约
+- `src/libs/reranker/reranker_factory.py` — 工厂 + NoneReranker 实现
+- `src/libs/reranker/__init__.py` — 模块导出
+- `tests/unit/test_reranker_factory.py` — 37 个测试用例
+
+### 13.2 核心架构
+
+```
+BaseReranker (ABC)          ← 抽象基类，定义 rerank() 接口
+├── NoneReranker            ← 默认回退（Null Object 模式），不重排
+├── CrossEncoderReranker    ← B7.8 实现（CrossEncoder 精排）
+└── LLMReranker             ← B7.7 实现（LLM 打分）
+
+RerankerFactory             ← 工厂，根据 settings.rerank.backend 创建实例
+├── enabled=False → NoneReranker  （降级，不报错）
+├── backend="none" → NoneReranker
+├── backend="cross_encoder" → CrossEncoderReranker (B7.8)
+└── backend="llm" → LLMReranker (B7.7)
+```
+
+### 13.3 数据契约：RerankCandidate
+
+```python
+@dataclass
+class RerankCandidate:
+    id: str                                    # 候选记录 ID（chunk_id）
+    score: float                               # 检索分数（粗排分数 → 精排分数）
+    text: str                                  # 候选文本（送入 CrossEncoder/LLM）
+    metadata: dict[str, Any] = field(...)      # 元数据（保留传递）
+```
+
+**设计要点**：
+- `score` 字段在重排前后会变化（粗排 → 精排分数）
+- `id`/`text`/`metadata` 不变，只是顺序变
+- 与 D2 的 `RetrievalResult` 字段对齐，方便 Core 层转换
+
+### 13.4 接口签名
+
+```python
+class BaseReranker(ABC):
+    @abstractmethod
+    def rerank(self, query: str, candidates: list[RerankCandidate], **kwargs) -> list[RerankCandidate]: ...
+
+    @property
+    @abstractmethod
+    def backend_name(self) -> str: ...
+```
+
+### 13.5 关键设计决策
+
+#### 1. Null Object 模式（NoneReranker）
+- **问题**：Reranker 是可选组件，未启用或失败时怎么办？
+- **方案**：用 `NoneReranker`（什么都不做的对象）代替 `None/null`
+- **好处**：上层代码不需要判空，统一调用 `rerank()` 接口
+- **对比**：如果返回 `None`，上层每次调用前都要 `if reranker is not None`
+
+#### 2. enabled=False 优先于 backend 校验
+- **问题**：`enabled=False` + `backend="cross_encoder"`（但 CrossEncoder 未实现）应该报错吗？
+- **方案**：不报错，直接返回 `NoneReranker`
+- **原因**：未启用时不关心 backend 是否有效，避免无意义的报错
+
+#### 3. 防御性拷贝
+- `NoneReranker.rerank()` 返回 `list(candidates)` 而非 `candidates`
+- 避免外部修改影响内部状态
+
+#### 4. 工厂与 B1-B4 的区别
+- B1-B4 工厂：不支持的 provider 直接报错
+- B5 工厂：`enabled=False` 时不报错，返回 `NoneReranker`（降级）
+- 这是 Reranker 的特殊性：可选组件，不启用时系统仍需正常工作
+
+### 13.6 两段式检索架构（面试重点）
+
+```
+用户查询
+  │
+  ▼
+粗排（Coarse Ranking）— Hybrid Search
+  ├── Dense Retrieval（向量检索）→ Bi-Encoder 分离编码
+  ├── Sparse Retrieval（BM25 关键词）→ TF-IDF 倒排索引
+  └── RRF Fusion（排名融合）→ Top-M 候选
+  │
+  ▼ Top-M candidates
+精排（Fine Ranking）— Reranker
+  ├── CrossEncoder：query + doc 联合编码，精度高但慢
+  ├── LLM Rerank：让 LLM 对候选打分
+  └── None：不重排（默认回退）
+  │
+  ▼ Top-K results
+最终返回
+```
+
+**Bi-Encoder vs Cross-Encoder**：
+| 特性 | Bi-Encoder（粗排） | Cross-Encoder（精排） |
+|------|---------------------|----------------------|
+| 编码方式 | query 和 doc 分离编码 | query 和 doc 联合编码 |
+| 预计算 | doc 向量可预计算 | 无法预计算 |
+| 速度 | 快（向量相似度） | 慢（每对都要推理） |
+| 精度 | 一般 | 高 |
+| 用途 | 从百万文档召回 Top-M | 从 Top-M 精选 Top-K |
+
+### 13.7 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| RerankCandidate 数据契约 | 6 | 字段定义、默认值、独立性、可变性、相等性 |
+| BaseReranker ABC 契约 | 8 | 抽象类不可实例化、子类未实现→TypeError、完整子类可实例化 |
+| NoneReranker 行为 | 10 | 不改变顺序/score/metadata/text、空列表、单候选、防御性拷贝 |
+| RerankerFactory 工厂 | 9 | backend=none→NoneReranker、enabled=False→NoneReranker、未知backend→Error、大小写不敏感、register() |
+| 端到端集成 | 3 | 完整流程：创建→rerank→验证 |
+| **合计** | **37** | |
+
+### 13.8 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "为什么要 Rerank？" | 粗排用速度换覆盖率（BM25+Dense），精排用质量换速度（CrossEncoder） |
+| "NoneReranker 的作用？" | 默认回退，Reranker 失败或未启用时保持原排序，保证系统可用性 |
+| "Null Object 模式？" | 用空行为对象代替 null 检查，上层代码统一调用接口不需要判空 |
+| "CrossEncoder vs Bi-Encoder？" | CrossEncoder 联合编码精度高但慢；Bi-Encoder 分离编码快但精度低 |
+| "Reranker 未启用时工厂返回什么？" | NoneReranker（不是 None），让上层代码统一调用 rerank() |
+| "rerank 会改变候选内容吗？" | 不会，只改变顺序和 score，id/text/metadata 不变 |
+| "新增重排后端需要改什么？" | 1.实现 BaseReranker 的 rerank() 和 backend_name 2.在 _BACKENDS 注册或调用 register() |
+| "enabled=False + 未知 backend 会报错吗？" | 不会，enabled=False 优先于 backend 校验，直接返回 NoneReranker |

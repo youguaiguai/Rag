@@ -1963,7 +1963,7 @@ dashboard:
 | B2 | Embedding 抽象接口与工厂 | [x] | 2025-08-09 | FakeEmbedding 确定性向量 + EmbeddingFactory 工厂路由，29 个测试用例全部通过 |
 | B3 | Splitter 抽象接口与工厂 | [x] | 2025-08-10 | FakeSplitter 定长切分 + SplitterFactory 工厂路由 + SplitterSettings 配置，27 个测试用例全部通过 |
 | B4 | VectorStore 抽象接口与工厂 | [x] | 2025-08-10 | BaseVectorStore 五方法契约 + VectorRecord/QueryResult 数据类型 + FakeVectorStore 内存存储 + 49 个契约测试全部通过 |
-| B5 | Reranker 抽象接口与工厂（含 None 回退） | [ ] | | |
+| B5 | Reranker 抽象接口与工厂（含 None 回退） | [x] | 2025-08-10 | BaseReranker 抽象基类 + RerankCandidate 数据契约 + NoneReranker 默认回退（Null Object 模式）+ RerankerFactory 工厂路由，37 个测试全部通过 |
 | B6 | Evaluator 抽象接口与工厂 | [ ] | | |
 | B7.1 | OpenAI-Compatible LLM 实现 | [ ] | | |
 | B7.2 | Ollama LLM 实现 | [ ] | | |
@@ -2067,7 +2067,7 @@ dashboard:
 | 阶段 | 总任务数 | 已完成 | 进度 |
 |------|---------|--------|------|
 | 阶段 A | 3 | 3 | 100% |
-| 阶段 B | 16 | 4 | 25% |
+| 阶段 B | 16 | 5 | 31% |
 | 阶段 C | 15 | 0 | 0% |
 | 阶段 D | 7 | 0 | 0% |
 | 阶段 E | 6 | 0 | 0% |
