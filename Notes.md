@@ -2203,3 +2203,133 @@ class BaseReranker(ABC):
 | "rerank 会改变候选内容吗？" | 不会，只改变顺序和 score，id/text/metadata 不变 |
 | "新增重排后端需要改什么？" | 1.实现 BaseReranker 的 rerank() 和 backend_name 2.在 _BACKENDS 注册或调用 register() |
 | "enabled=False + 未知 backend 会报错吗？" | 不会，enabled=False 优先于 backend 校验，直接返回 NoneReranker |
+
+---
+
+## 14. B6: Evaluator 抽象接口与工厂
+
+### 14.1 任务概述
+
+**目标**：定义 `BaseEvaluator`、`EvaluatorFactory`，实现最小 `CustomEvaluator`（hit_rate/mrr/recall@k/precision@k）。
+
+**修改文件**：
+- `src/libs/evaluator/base_evaluator.py` — 抽象基类 + 数据契约
+- `src/libs/evaluator/custom_evaluator.py` — 自定义轻量指标实现
+- `src/libs/evaluator/evaluator_factory.py` — 工厂
+- `src/libs/evaluator/__init__.py` — 模块导出
+- `tests/unit/test_custom_evaluator.py` — 58 个测试用例
+
+### 14.2 核心架构
+
+```
+BaseEvaluator (ABC)          ← 抽象基类，定义 evaluate() 接口
+├── CustomEvaluator          ← 轻量检索指标（hit_rate, mrr, recall@k, precision@k）
+├── RagasEvaluator           ← H1 阶段实现（LLM-as-Judge 生成指标）
+└── CompositeEvaluator       ← H2 阶段实现（组合多后端并行）
+
+EvaluatorFactory             ← 工厂，根据 backend 创建实例
+├── backend="custom"  → CustomEvaluator
+├── backend="ragas"   → RagasEvaluator (H1)
+└── register() 支持动态注册
+```
+
+### 14.3 数据契约
+
+```python
+@dataclass
+class RetrievedChunk:       # 检索结果单元（evaluate 的输入）
+    id: str                 # chunk_id
+    score: float            # 检索分数
+    text: str               # 检索文本
+    metadata: dict[str, Any]
+
+@dataclass
+class GroundTruth:          # 标准答案（evaluate 的输入）
+    query: str              # 原始查询
+    golden_ids: list[str]   # 正确 chunk_id 列表（用于检索评估）
+    golden_answer: str      # 标准答案文本（用于生成评估）
+
+@dataclass
+class EvalResult:           # 评估结果（evaluate 的输出）
+    backend_name: str       # 后端名称
+    metrics: dict[str, float]  # 指标字典（灵活扩展）
+    details: dict[str, Any]    # 详细信息
+```
+
+### 14.4 接口签名
+
+```python
+class BaseEvaluator(ABC):
+    @abstractmethod
+    def evaluate(self, query: str, retrieved_chunks: list[RetrievedChunk],
+                 generated_answer: str, ground_truth: GroundTruth) -> EvalResult: ...
+
+    @property
+    @abstractmethod
+    def backend_name(self) -> str: ...
+```
+
+### 14.5 检索质量指标定义（面试重点）
+
+| 指标 | 定义 | 取值 | 公式 |
+|------|------|------|------|
+| Hit Rate | golden_id 是否在 Top-K 中 | 0 或 1 | `1 if len(set(top_k_ids) & golden_set) > 0 else 0` |
+| MRR | 第一个命中的排名倒数 | 0~1 | `1 / rank_of_first_hit` |
+| Recall@K | Top-K 中命中的 golden_ids 比例 | 0~1 | `hit_count / len(golden_ids)` |
+| Precision@K | Top-K 中命中数 / K | 0~1 | `hit_count / K` |
+
+**Hit Rate vs MRR**：
+- Hit Rate 只判有无（0 或 1），不关心排名位置
+- MRR 关心命中位置（第 1 名=1.0，第 3 名=0.333）
+
+**Recall vs Precision**：
+- Recall 看覆盖率（漏了多少 golden）
+- Precision 看准确率（Top-K 中有多少正确的）
+
+### 14.6 关键设计决策
+
+#### 1. 标准化输出（EvalResult.metrics 是 dict）
+- 不同评估后端的指标不同（custom 输出 hit_rate/mrr，ragas 输出 faithfulness）
+- 用 dict 可以灵活扩展，不需要改 EvalResult 类
+- 面试考点："为什么用 dict 而非固定字段？" → 可扩展性
+
+#### 2. 工厂接受 backend 字符串而非 Settings 对象
+- EvaluationSettings.backends 是 `List[str]`（多个后端）
+- 需要逐个创建，所以工厂接受 backend 字符串
+- 面试考点："为什么 B6 工厂不接受 Settings？" → backends 是列表
+
+#### 3. evaluate 只评估单条查询
+- 单一职责：evaluate 只负责一条查询的评估
+- 批量评估在上层循环调用，然后取平均
+- 面试考点："为什么不在 evaluate 里做批量？" → 单一职责
+
+#### 4. generated_answer 在 CustomEvaluator 中不使用
+- CustomEvaluator 只评估检索质量（hit_rate, mrr）
+- generated_answer 和 golden_answer 在 RagasEvaluator 中才使用
+- 面试考点："CustomEvaluator 用 generated_answer 吗？" → 不用，只评估检索
+
+### 14.7 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| RetrievedChunk 数据契约 | 5 | 字段定义、默认值、独立性、相等性 |
+| GroundTruth 数据契约 | 5 | 字段定义、默认值、独立性 |
+| EvalResult 数据契约 | 5 | 字段定义、默认值、独立性、相等性 |
+| BaseEvaluator ABC 契约 | 8 | 抽象类不可实例化、子类未实现→TypeError |
+| CustomEvaluator 指标 | 18 | hit_rate/mrr/recall/precision 各场景、边界情况、确定性 |
+| EvaluatorFactory 工厂 | 9 | custom→CustomEvaluator、未知→Error、register()、大小写 |
+| 端到端集成 | 4 | 完整流程、命中/未命中/多 golden、确定性验证 |
+| **合计** | **58** | |
+
+### 14.8 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Hit Rate 和 MRR 的区别？" | Hit Rate 只判有无，MRR 还看排名位置 |
+| "MRR 为什么用倒数？" | 排名越靠前分数越高（第 1 名=1.0，第 3 名=0.333） |
+| "Recall 和 Precision 的区别？" | Recall 看覆盖率（漏了多少），Precision 看准确率（错了多少） |
+| "为什么用 CustomEvaluator 而非 Ragas？" | 轻量快速，不依赖 LLM，适合 CI/CD |
+| "为什么 metrics 用 dict 而非固定字段？" → | 不同后端指标不同，dict 可灵活扩展 |
+| "新增评估后端需要改什么？" | 1.实现 BaseEvaluator 的 evaluate() 和 backend_name 2.在 _BACKENDS 注册或调用 register() |
+| "evaluate 方法评估单条还是批量？" | 单条，批量在上层循环调用取平均 |
+| "golden_ids 为空怎么办？" | 抛出 EvaluatorError，没有标准答案无法评估 |
