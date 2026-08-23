@@ -2530,3 +2530,129 @@ class BaseEvaluator(ABC):
 | "Vision 不启用时工厂返回什么？" | NoneVisionLLM 空对象（不是 None） |
 | "Vision 失败怎么办？" | 返回空字符串，由调用方决定是否跳过 |
 | "图片怎么参与 RAG 检索？" | 先 captioning 转文本 → 再 embed → 参与向量检索 |
+
+---
+
+## 17. Stage C1 完成总结：Document/Chunk/ChunkRecord 数据契约
+
+**完成时间**：2025-08-23
+**测试总数**：452 全部通过（1.11s）
+
+### 17.1 文件结构
+
+| 文件 | 代码行 | 关键设计 |
+|------|--------|---------|
+| `src/core/types.py` | ~230 | 契约中心模式 — 全链路共享 Document/Chunk/ChunkRecord |
+| `tests/unit/test_data_contracts.py` | ~300 | 31 个测试覆盖所有数据契约 |
+
+### 17.2 三个核心数据契约
+
+#### Document — 文档对象（摄取链路起点）
+
+```python
+@dataclass
+class Document:
+    doc_id: str          # 文档唯一标识（source_path 的 SHA256 前 16 位）
+    source_path: str     # 源文件路径（溯源 + 增量摄取）
+    text: str            # 文档全文（Markdown 格式，经 BaseLoader 转换）
+    metadata: dict       # 文档级元数据（doc_type, title, file_hash 等）
+```
+
+生命周期：BaseLoader 读取文件 → 生成 Document → DocumentChunker 切分为 list[Chunk]
+
+#### Chunk — 文档分块（带位置信息和溯源）
+
+```python
+@dataclass
+class Chunk:
+    chunk_id: str                      # 块唯一标识
+    doc_id: str                        # 所属文档 ID
+    text: str                          # 块文本内容
+    index: int                         # 块在文档中的序号（0-based）
+    source_ref: str = ""               # 溯源引用（如 "doc.pdf#page=3"）
+    metadata: dict = {}                # 块级元数据（继承 Document + Splitter 添加）
+    image_ids: list = []              # 块包含的图片 ID 列表
+    has_unprocessed_images: bool = False  # 是否有未描述的图片（降级标记）
+```
+
+生命周期：DocumentChunker 切分 → Transform 链精化 → Encoder 编码 → ChunkRecord
+
+#### ChunkRecord — 带向量的 Chunk（用于存储）
+
+```python
+@dataclass
+class ChunkRecord:
+    chunk_id: str          # 块唯一标识（与 Chunk.chunk_id 一致）
+    doc_id: str            # 所属文档 ID
+    text: str              # 块文本内容
+    embedding: list[float]  # 向量（维度由 Embedding 模型决定）
+    metadata: dict          # 元数据
+    source_ref: str = ""   # 溯源引用
+```
+
+生命周期：Chunk + embedding → ChunkRecord → VectorUpserter → VectorStore
+
+### 17.3 ID 生成策略（面试核心考点）
+
+```python
+chunk_id = f"{doc_id}_{index:04d}_{content_hash[:8]}"
+# 示例：a3f2b1c9d8e7f6a5_0003_7b8a3c91
+
+doc_id = hashlib.sha256(source_path.encode()).hexdigest()[:16]
+content_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
+```
+
+| 组成 | 长度 | 作用 |
+|------|------|------|
+| doc_id | 16 字符 | 文档唯一标识（SHA256 前 16 位） |
+| index | 4 字符 | 块序号（0000-9999，零填充） |
+| content_hash | 8 字符 | 内容指纹（SHA256 前 8 位） |
+
+**幂等性保证**：
+- 内容不变 → content_hash 不变 → id 不变 → upsert 覆盖（幂等）
+- 内容变更 → content_hash 变化 → id 变化 → 新记录（增量更新）
+- 面试考点："为什么 ID 包含 content_hash？" → 内容变更时自动生成新 ID
+
+### 17.4 转换函数
+
+| 函数 | 输入 | 输出 | 用途 |
+|------|------|------|------|
+| `generate_doc_id(source_path)` | str | str (16字符) | 根据文件路径生成文档 ID |
+| `generate_chunk_id(doc_id, index, content)` | str+int+str | str (~30字符) | 生成 Chunk ID |
+| `chunk_to_record(chunk, embedding)` | Chunk+list[float] | ChunkRecord | Chunk + 向量 → 存储记录 |
+| `record_to_vector_record(record)` | ChunkRecord | VectorRecord | 存储记录 → 向量数据库输入 |
+
+### 17.5 ChunkRecord vs VectorRecord（面试必问）
+
+| 维度 | ChunkRecord | VectorRecord |
+|------|-------------|--------------|
+| 用途 | 摄取链路中间产物 | 向量数据库输入单元 |
+| 来源 | Chunk + Embedding | ChunkRecord 转换 |
+| 字段 | chunk_id, doc_id, text, embedding, metadata, source_ref | id, embedding, text, metadata |
+| 区别 | 有 doc_id 和 source_ref 独立字段 | doc_id 和 source_ref 合并到 metadata |
+
+面试考点："为什么需要两层数据结构？" → 分离业务逻辑（ChunkRecord）和存储逻辑（VectorRecord）
+
+### 17.6 C1 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| ID 生成函数 | 4 | 返回类型、确定性、不同路径不同 ID、ID 长度 |
+| Document 契约 | 5 | 基本字段、默认 metadata、实例独立性、相等性、富 metadata |
+| Chunk 契约 | 7 | 基本字段、默认值、独立性、图片字段、has_unprocessed_images |
+| ChunkRecord 契约 | 5 | 基本字段、默认值、独立性、相等性 |
+| 转换函数 | 4 | chunk_to_record、record_to_vector_record、深拷贝、字段完整性 |
+| ID 策略集成 | 4 | 格式检查、零填充、幂等性、内容变更检测 |
+| **合计** | **31** | |
+
+### 17.7 C1 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "什么是契约中心模式？" | 所有模块共享 types.py 中的数据定义，避免格式转换 |
+| "Document/Chunk/ChunkRecord 的数据流？" | Document → 切分 → Chunk → 编码 → ChunkRecord → 存储 |
+| "chunk_id 为什么要包含 content_hash？" | 内容变更时自动生成新 ID，实现增量更新和幂等性 |
+| "Chunk 和 Document 的区别？" | Chunk 带位置信息（index）和溯源（source_ref） |
+| "ChunkRecord 和 VectorRecord 的区别？" | ChunkRecord 是中间产物（有 doc_id 独立字段），VectorRecord 是数据库输入（doc_id 合并到 metadata） |
+| "has_unprocessed_images 什么时候为 True？" | Vision LLM 不可用时，图片无法描述 |
+| "为什么用 SHA256 生成 ID 而非文件名？" | 唯一性 + 固定长度 + 不含特殊字符 |
