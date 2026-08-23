@@ -13,7 +13,6 @@ Embedding 工厂 — 根据配置创建对应的 Embedding 实例
   provider="ollama"   → OllamaEmbedding（需 ollama 服务运行）
   provider="fake"     → FakeEmbedding（测试桩，不调用真实 API）
 
-当前阶段（B2）：
   - 只实现 FakeEmbedding（测试桩），验证工厂路由逻辑
   - OpenAI/Azure/Ollama 实现在后续阶段（B7.3-B7.4）添加
   - 面试考点："为什么先用 Fake 实现？" → 隔离测试 + 不依赖外部服务
@@ -31,7 +30,12 @@ import hashlib
 from typing import Any
 
 from core.settings import EmbeddingSettings
+from libs.embedding.azure_embedding import AzureEmbedding
+
+from libs.embedding.azure_embedding import AzureEmbedding
 from libs.embedding.base_embedding import BaseEmbedding, EmbeddingError
+from libs.embedding.ollama_embedding import OllamaEmbedding
+from libs.embedding.openai_embedding import OpenAIEmbedding
 
 
 # ============================================================
@@ -143,6 +147,9 @@ class EmbeddingFactory:
     #   新增 Provider 只需加一行映射，不用改 create() 方法
     _PROVIDERS: dict[str, type[BaseEmbedding]] = {
         "fake": FakeEmbedding,
+        "openai": OpenAIEmbedding,
+        "azure": AzureEmbedding,
+        "ollama": OllamaEmbedding,
     }
 
     @classmethod

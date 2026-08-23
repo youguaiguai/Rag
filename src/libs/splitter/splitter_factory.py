@@ -27,10 +27,10 @@ Splitter 工厂 — 根据配置创建对应的 Splitter 实例
 
 from __future__ import annotations
 
-from typing import Any
-
 from core.settings import SplitterSettings
 from libs.splitter.base_splitter import BaseSplitter, SplitterError
+from libs.splitter.recursive_splitter import RecursiveSplitter
+from typing import Any
 
 
 # ============================================================
@@ -138,6 +138,7 @@ class SplitterFactory:
     #   新增策略只需加一行映射，不用改 create() 方法
     _PROVIDERS: dict[str, type[BaseSplitter]] = {
         "fake": FakeSplitter,
+        "recursive": RecursiveSplitter,
     }
 
     @classmethod

@@ -26,10 +26,12 @@ Reranker 工厂 — 根据配置创建对应的 Reranker 实例
 
 from __future__ import annotations
 
-from typing import Any
-
 from core.settings import RerankSettings
+from libs.llm.base_llm import BaseLLM
 from libs.reranker.base_reranker import BaseReranker, RerankCandidate, RerankerError
+from libs.reranker.cross_encoder_reranker import CrossEncoderReranker
+from libs.reranker.llm_reranker import LLMReranker
+from typing import Any
 
 
 # ============================================================
@@ -115,10 +117,12 @@ class RerankerFactory:
     # Backend → 实现类的映射表
     _BACKENDS: dict[str, type[BaseReranker]] = {
         "none": NoneReranker,
+        "llm": LLMReranker,
+        "cross_encoder": CrossEncoderReranker,
     }
 
     @classmethod
-    def create(cls, settings: RerankSettings) -> BaseReranker:
+    def create(cls, settings: RerankSettings, llm: BaseLLM | None = None, **kwargs: Any) -> BaseReranker:
         """根据配置创建 Reranker 实例
 
         接口签名：RerankerFactory.create(settings: RerankSettings) -> BaseReranker
@@ -151,6 +155,11 @@ class RerankerFactory:
             )
 
         reranker_class = cls._BACKENDS[backend]
+        # LLM Reranker 需要 llm 参数
+        if backend == "llm":
+            if llm is None:
+                raise RerankerError("LLM Reranker 需要传入 llm 参数")
+            return reranker_class(settings, llm=llm, **kwargs)
         return reranker_class(settings)
 
     @classmethod

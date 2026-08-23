@@ -27,8 +27,6 @@ VectorStore 工厂 — 根据配置创建对应的 VectorStore 实例
 from __future__ import annotations
 
 import math
-from typing import Any
-
 from core.settings import VectorStoreSettings
 from libs.vector_store.base_vector_store import (
     BaseVectorStore,
@@ -36,6 +34,8 @@ from libs.vector_store.base_vector_store import (
     VectorRecord,
     VectorStoreError,
 )
+from libs.vector_store.chroma_store import ChromaStore
+from typing import Any
 
 
 # ============================================================
@@ -229,6 +229,7 @@ class VectorStoreFactory:
     # Backend → 实现类的映射表
     _BACKENDS: dict[str, type[BaseVectorStore]] = {
         "fake": FakeVectorStore,
+        "chroma": ChromaStore,
     }
 
     @classmethod

@@ -2333,3 +2333,116 @@ class BaseEvaluator(ABC):
 | "新增评估后端需要改什么？" | 1.实现 BaseEvaluator 的 evaluate() 和 backend_name 2.在 _BACKENDS 注册或调用 register() |
 | "evaluate 方法评估单条还是批量？" | 单条，批量在上层循环调用取平均 |
 | "golden_ids 为空怎么办？" | 抛出 EvaluatorError，没有标准答案无法评估 |
+
+---
+
+## 15. Stage B7 完成总结：具体 Provider 实现（B7.1-B7.8）
+
+**完成时间**：2025-08-21
+**测试总数**：391 全部通过（0.96s）
+
+### 15.1 B7.1-B7.2: LLM Provider 实现
+
+| 文件 | 代码行 | 测试数 | 关键设计 |
+|------|--------|--------|---------|
+| `openai_llm.py` | ~120 | 8 (smoke) | httpx 封装 OpenAI-compatible API，不依赖 openai SDK |
+| `azure_llm.py` | ~130 | 8 (smoke) | httpx 封装 Azure OpenAI，api-version 参数 |
+| `deepseek_llm.py` | ~110 | 9 (smoke) | 继承 OpenAI LLM，覆盖 base_url |
+| `ollama_llm.py` | ~130 | 12 | httpx 封装 Ollama REST API /chat，options 传参 |
+
+**核心设计决策**：
+- 不依赖 `openai` SDK，用 `httpx` 直接封装 → 减少依赖、更可控
+- 所有 LLM 继承 `BaseLLM`，实现 `chat()` + `model_name` property
+- 测试用 `httpx.MockTransport` 确保不依赖外部网络
+
+### 15.2 B7.3-B7.4: Embedding Provider 实现
+
+| 文件 | 代码行 | 测试数 | 关键设计 |
+|------|--------|--------|---------|
+| `openai_embedding.py` | ~130 | 11 (smoke) | httpx 封装 /v1/embeddings，维度校验 |
+| `azure_embedding.py` | ~130 | 8 (smoke) | Azure OpenAI deployment name 替代 model |
+| `ollama_embedding.py` | ~120 | 14 | 循环单条调用 Ollama /api/embeddings |
+
+**核心设计决策**：
+- `embed()` 支持批量输入，统一返回 `list[list[float]]`
+- 维度自动检测：`dimensions=0` 时不校验，由模型决定
+- Ollama API 不支持批量 → 在 `embed()` 内循环单条调用
+
+### 15.3 B7.5: Recursive Splitter 实现
+
+| 文件 | 代码行 | 测试数 | 关键设计 |
+|------|--------|--------|---------|
+| `recursive_splitter.py` | ~200 | 18 | 纯 Python 递归字符切分，不依赖 LangChain |
+
+**核心算法**：
+1. 按分隔符层级递归切分：`\n\n` → `\n` → ` ` → 逐字符
+2. 切分后片段超长 → 用下一级分隔符继续切
+3. 合并相邻小片段到接近 `chunk_size`
+4. 添加 `chunk_overlap` 重叠保持上下文连续性
+
+**面试要点**：
+- "Recursive 和定长切分的区别？" → 递归优先在分隔符处切，保持语义边界
+- "为什么要递归？" → 尽量保持语义边界，只在必要时才往更细粒度切
+
+### 15.4 B7.6: ChromaStore 实现
+
+| 文件 | 代码行 | 测试数 | 关键设计 |
+|------|--------|--------|---------|
+| `chroma_store.py` | ~230 | 16 (integration) | ChromaDB PersistentClient，cosine 距离 |
+
+**核心操作**：
+- `upsert()` → 幂等写入（相同 ID 覆盖）
+- `query()` → 向量相似度检索 + metadata 过滤
+- `delete()` → 按 ID 删除
+- `get_by_ids()` → 批量获取（不含向量）
+- `delete_by_metadata()` → 按 metadata 条件批量删除
+
+**面试要点**：
+- "Chroma 和 Qdrant 的区别？" → Chroma 嵌入式无需部署，Qdrant 需要容器
+- "upsert 和 insert 的区别？" → upsert 幂等，相同 ID 覆盖旧记录
+- "Chroma 的 where 过滤？" → 支持 `$eq/$ne/$in` 等 metadata 操作符
+
+### 15.5 B7.7: LLM Reranker 实现
+
+| 文件 | 代码行 | 测试数 | 关键设计 |
+|------|--------|--------|---------|
+| `llm_reranker.py` | ~160 | 17 | LLM 打分 + 正则解析 + 失败回退 |
+
+**核心流程**：
+1. 读取 `config/prompts/rerank.txt` prompt 模板
+2. 对每个候选构造 prompt（query + doc）→ 调用 LLM → 解析 1-10 评分
+3. 按评分降序排列
+4. LLM 调用失败时返回 0.0 分（不阻断流程）
+
+**面试要点**：
+- "LLM Rerank vs CrossEncoder？" → LLM 更灵活但慢
+- "LLM 输出不规范怎么办？" → 正则提取数字 + 默认值
+- "Reranker 失败怎么办？" → 返回原排序，不阻断流程
+
+### 15.6 B7.8: Cross-Encoder Reranker 实现
+
+| 文件 | 代码行 | 测试数 | 关键设计 |
+|------|--------|--------|---------|
+| `cross_encoder_reranker.py` | ~160 | 14 | scorer 依赖注入 + Jaccard 默认打分 |
+
+**核心设计**：
+- 使用可注入的 `scorer: Callable[[str, str], float]` 函数
+- 默认 scorer 用 Jaccard 相似度（词汇重叠率）→ 确定性、不依赖外部模型
+- 生产环境可注入 `sentence-transformers` 的 CrossEncoder
+- scorer 失败时返回原始排序（fallback）
+
+**面试要点**：
+- "CrossEncoder 为什么精度高？" → query 和 doc 联合编码，交互注意力
+- "为什么用依赖注入？" → 解耦 + 可测试性
+- "Bi-Encoder vs Cross-Encoder？" → Bi-Encoder 分离编码可预计算快但精度低，Cross-Encoder 联合编码精度高但慢
+
+### 15.7 B7 阶段工厂注册汇总
+
+| 工厂 | 支持后端 |
+|------|---------|
+| `LLMFactory` | `fake`, `openai`, `azure`, `deepseek`, `ollama` |
+| `EmbeddingFactory` | `fake`, `openai`, `azure`, `ollama` |
+| `SplitterFactory` | `fake`, `recursive` |
+| `VectorStoreFactory` | `fake`, `chroma` |
+| `RerankerFactory` | `none`, `llm`, `cross_encoder` |
+| `EvaluatorFactory` | `custom` |

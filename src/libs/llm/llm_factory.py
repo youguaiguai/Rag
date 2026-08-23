@@ -31,7 +31,11 @@ from __future__ import annotations
 from typing import Any
 
 from core.settings import LLMSettings
+from libs.llm.azure_llm import AzureLLM
 from libs.llm.base_llm import BaseLLM, LLMError, MessageType
+from libs.llm.deepseek_llm import DeepSeekLLM
+from libs.llm.ollama_llm import OllamaLLM
+from libs.llm.openai_llm import OpenAILLM
 
 
 # ============================================================
@@ -106,6 +110,10 @@ class LLMFactory:
     #   新增 Provider 只需加一行映射，不用改 create() 方法
     _PROVIDERS: dict[str, type[BaseLLM]] = {
         "fake": FakeLLM,
+        "openai": OpenAILLM,
+        "azure": AzureLLM,
+        "deepseek": DeepSeekLLM,
+        "ollama": OllamaLLM,
     }
 
     @classmethod
