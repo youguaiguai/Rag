@@ -2446,3 +2446,87 @@ class BaseEvaluator(ABC):
 | `VectorStoreFactory` | `fake`, `chroma` |
 | `RerankerFactory` | `none`, `llm`, `cross_encoder` |
 | `EvaluatorFactory` | `custom` |
+| `VisionLLMFactory` | `fake`, `azure`, `none` |
+
+---
+
+## 16. Stage B8 完成总结：Vision LLM 抽象 + Azure Vision 实现
+
+**完成时间**：2025-08-23
+**测试总数**：421 全部通过（1.17s）
+
+### 16.1 B8.1: BaseVisionLLM 抽象基类
+
+| 文件 | 代码行 | 关键设计 |
+|------|--------|---------|
+| `base_vision_llm.py` | ~100 | ABC 抽象基类，定义 `caption_image()` + `model_name` + `provider_name` |
+
+**核心设计决策**：
+- **不继承 BaseLLM**：接口不同（`caption_image` vs `chat`），遵循接口隔离原则 (ISP)
+- **入参是 Base64 而非文件路径**：解耦图片来源，可测试性好
+- **降级策略**：失败时返回空字符串，不阻断摄取流程
+
+**面试要点**：
+- "Vision LLM 和普通 LLM 的区别？" → 多了图像理解能力，content 从 string 变成 list[dict]
+- "为什么不继承 BaseLLM？" → 接口不同 + 职责不同 + 接口隔离原则
+- "为什么传 Base64 而非 path？" → 解耦 + 可测试性
+- "图片怎么参与 RAG 检索？" → 先 captioning 转文本，再 embed
+
+### 16.2 B8.2: FakeVisionLLM 测试桩
+
+| 文件 | 代码行 | 关键设计 |
+|------|--------|---------|
+| `vision_factory.py` (FakeVisionLLM) | ~40 | 返回固定/可预测的图片描述，不依赖真实 API |
+
+### 16.3 B8.3: AzureVisionLLM 实现
+
+| 文件 | 代码行 | 测试数 | 关键设计 |
+|------|--------|--------|---------|
+| `azure_vision_llm.py` | ~170 | 12 (MockTransport) | httpx 封装 Azure OpenAI Vision API，multimodal content 格式 |
+
+**核心流程**：
+1. 构造 data URI：`data:image/png;base64,{base64_str}`
+2. 构造 multimodal content：`[{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": data_uri}}]`
+3. POST 到 Azure OpenAI deployment 端点（与 AzureLLM 相同的 URL 格式）
+4. 解析 `choices[0].message.content` 获取描述文本
+
+**与 AzureLLM 的区别**：
+- AzureLLM: `messages.content` 是 string
+- AzureVisionLLM: `messages.content` 是 `list[dict]`（多模态格式）
+- 面试考点："为什么 content 从 string 变成 list？" → 需要同时传文本和图片
+
+### 16.4 B8.4: VisionLLMFactory 工厂
+
+| 文件 | 代码行 | 测试数 | 关键设计 |
+|------|--------|--------|---------|
+| `vision_factory.py` | ~120 | 5 | 工厂模式 + NoneVisionLLM 空对象模式 |
+
+**降级策略**：
+- `enabled=false` → 返回 `NoneVisionLLM`（空对象，不报错）
+- `NoneVisionLLM.caption_image()` → 返回空字符串 `""`
+- 调用方不需要判空（空对象实现了完整接口）
+- 面试考点："Vision 不启用时工厂返回什么？" → NoneVisionLLM（不是 None）
+
+### 16.5 B8 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| BaseVisionLLM ABC 契约 | 3 | 不可实例化、子类未实现→TypeError、完整实现→可用 |
+| FakeVisionLLM | 6 | 继承关系、provider/model_name、默认/自定义 response |
+| NoneVisionLLM | 3 | 空对象模式、返回空字符串、model/provider name |
+| AzureVisionLLM 初始化 | 6 | 缺 api_key/endpoint/deployment → LLMError |
+| AzureVisionLLM caption | 6 | 成功/空图片/默认prompt/401/429/400/解析失败 |
+| VisionLLMFactory 工厂 | 5 | disabled→None、fake/azure 路由、未知→Error、register() |
+| **合计** | **30** | |
+
+### 16.6 B8 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Vision LLM 和普通 LLM 的区别？" | Vision LLM 接受图片输入，content 从 string 变成 list[dict] |
+| "为什么不继承 BaseLLM？" | 接口不同（caption_image vs chat）+ 接口隔离原则 |
+| "为什么传 Base64 而非文件路径？" | 解耦图片来源 + 可测试性 |
+| "Azure Vision API 的请求格式？" | multimodal content: [{type: text}, {type: image_url}] |
+| "Vision 不启用时工厂返回什么？" | NoneVisionLLM 空对象（不是 None） |
+| "Vision 失败怎么办？" | 返回空字符串，由调用方决定是否跳过 |
+| "图片怎么参与 RAG 检索？" | 先 captioning 转文本 → 再 embed → 参与向量检索 |

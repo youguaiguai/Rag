@@ -28,11 +28,10 @@ from __future__ import annotations
 
 import os
 import re
+import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, List
-
-import yaml
 
 
 # ============================================================
@@ -113,6 +112,7 @@ class VisionLLMSettings:
     api_key: str = ""
     azure_endpoint: str = ""
     deployment_name: str = ""
+    api_version: str = ""
     base_url: str = ""
 
 
