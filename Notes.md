@@ -2656,3 +2656,86 @@ content_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
 | "ChunkRecord 和 VectorRecord 的区别？" | ChunkRecord 是中间产物（有 doc_id 独立字段），VectorRecord 是数据库输入（doc_id 合并到 metadata） |
 | "has_unprocessed_images 什么时候为 True？" | Vision LLM 不可用时，图片无法描述 |
 | "为什么用 SHA256 生成 ID 而非文件名？" | 唯一性 + 固定长度 + 不含特殊字符 |
+
+---
+
+## 18. Stage C2 完成总结：SHA256 文件完整性检查
+
+**完成时间**：2025-08-23
+**测试总数**：476 全部通过（1.22s）
+
+### 18.1 文件结构
+
+| 文件 | 代码行 | 关键设计 |
+|------|--------|---------|
+| `src/libs/loader/file_integrity.py` | ~190 | SHA256 哈希追踪 + JSON 持久化 + 增量判断 |
+| `src/libs/loader/__init__.py` | 10 | 模块导出 |
+| `tests/unit/test_file_integrity.py` | ~250 | 24 个测试覆盖全部场景 |
+
+### 18.2 核心接口
+
+| 方法 | 签名 | 用途 |
+|------|------|------|
+| `compute_hash` | `(file_path: str) -> str` | 计算文件 SHA256（分块 8KB 读取） |
+| `has_changed` | `(file_path: str) -> bool` | 判断文件是否变更/首次出现 |
+| `update_hash` | `(file_path: str) -> str` | 更新文件哈希记录 |
+| `get_hash` | `(file_path: str) -> str\|None` | 获取已存储的哈希 |
+| `save` | `() -> None` | 持久化到 JSON 文件 |
+| `load` | `() -> None` | 从 JSON 加载（容错：文件损坏→空字典） |
+| `remove` | `(file_path: str) -> bool` | 删除记录（DocumentManager 用） |
+| `clear` | `() -> None` | 清空所有记录（--force 全量重跑用） |
+
+### 18.3 SHA256 原理
+
+| 特性 | 说明 |
+|------|------|
+| 固定长度 | 任意输入 → 64 字符十六进制输出 |
+| 雪崩效应 | 输入 1 bit 变化 → 输出完全不同 |
+| 不可逆 | 无法从哈希反推原文 |
+| 确定性 | 相同输入 → 永远相同输出 |
+
+分块读取设计：8KB 块循环读取，避免大文件 OOM。
+
+### 18.4 增量摄取流程
+
+```
+首次运行:
+  文件A → has_changed? → True → 处理 → update_hash(A)
+  文件B → has_changed? → True → 处理 → update_hash(B)
+
+第二次运行（文件A未变, 文件B修改了）:
+  文件A → has_changed? → False → 跳过（增量优化）
+  文件B → has_changed? → True → 重新处理 → update_hash(B)
+```
+
+### 18.5 持久化设计
+
+- **格式**：JSON 文件 `{source_path: file_hash}` 映射
+- **路径**：`data/db/file_hashes.json`
+- **load 容错**：文件不存在 → 空字典；JSON 损坏 → 空字典（不阻断流程）
+- **save 策略**：自动创建父目录；不自动 save（由 Pipeline 批量调用减少 IO）
+
+### 18.6 C2 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 基本属性 | 3 | db_path、count、get_all_paths |
+| compute_hash | 4 | 返回类型、哈希长度64、确定性、文件不存在→Error |
+| has_changed | 4 | 新文件True、未变更False、修改True、不同文件不同哈希 |
+| update/get_hash | 3 | update返回哈希、get获取存储哈希、未记录→None |
+| save/load | 4 | save创建文件、load恢复、load不存在、load损坏JSON容错 |
+| remove/clear | 3 | 删除存在→True、删除不存在→False、clear清空 |
+| 增量摄取场景 | 3 | 首次全量、第二次跳过、修改检测 |
+| **合计** | **24** | |
+
+### 18.7 C2 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "为什么要做文件完整性检查？" | 增量摄取（跳过未变更文件）+ 幂等性保证 |
+| "SHA256 的特点？" | 固定长度 + 雪崩效应 + 不可逆 + 确定性 |
+| "增量摄取怎么实现的？" | 首次运行存哈希 → 后续运行对比哈希 → 不同则重新处理 |
+| "为什么不一次性 read 整个文件？" | 大文件可能 OOM → 8KB 分块读取 |
+| "为什么用 JSON 而非 SQLite？" | 简单 + 单文件 + 无依赖 + 量小 |
+| "load 失败怎么办？" | 容错降级为空字典，不阻断流程 |
+| "--force 全量重跑怎么实现？" | clear() 清空哈希记录 → 所有文件都判定为变更 |
