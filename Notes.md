@@ -2739,3 +2739,85 @@ content_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
 | "为什么用 JSON 而非 SQLite？" | 简单 + 单文件 + 无依赖 + 量小 |
 | "load 失败怎么办？" | 容错降级为空字典，不阻断流程 |
 | "--force 全量重跑怎么实现？" | clear() 清空哈希记录 → 所有文件都判定为变更 |
+
+---
+
+## 19. Stage C3 完成总结：BaseLoader 抽象基类与 PDF Loader
+
+**完成时间**：2025-08-24
+**测试总数**：505 passed, 1 skipped（1.46s）
+
+### 19.1 文件结构
+
+| 文件 | 代码行 | 关键设计 |
+|------|--------|---------|
+| `src/libs/loader/base_loader.py` | ~70 | ABC 抽象基类，定义 `load(path) -> Document` |
+| `src/libs/loader/pdf_loader.py` | ~130 | MarkItDown PDF→Markdown 转换，标题提取 |
+| `src/libs/loader/loader_factory.py` | ~200 | 工厂模式 + FakeLoader + MarkdownLoader + TextLoader |
+| `src/libs/loader/__init__.py` | 30 | 模块导出（含 C2 的 FileIntegrityChecker） |
+| `tests/unit/test_loader_contract.py` | ~280 | 30 个测试（29 passed, 1 skipped） |
+
+### 19.2 核心接口
+
+| 方法 | 签名 | 用途 |
+|------|------|------|
+| `BaseLoader.load` | `(path: str) -> Document` | 加载文件，返回统一 Document 对象 |
+| `LoaderFactory.create` | `(file_type: str) -> BaseLoader` | 按类型名创建 Loader |
+| `LoaderFactory.create_for_file` | `(path: str) -> BaseLoader` | 按文件扩展名自动路由 |
+
+### 19.3 Loader 实现矩阵
+
+| Loader | 支持扩展名 | 转换方式 | 特点 |
+|--------|-----------|---------|------|
+| `PdfLoader` | `.pdf` | MarkItDown → Markdown | 延迟导入 markitdown，标题提取 |
+| `MarkdownLoader` | `.md`, `.markdown` | 直接读取 | 文本即 Markdown，无需转换 |
+| `TextLoader` | `.txt` | 直接读取 | 纯文本加载 |
+| `FakeLoader` | `.fake` | 不读文件 | 测试桩，返回预设 Document |
+
+### 19.4 关键设计决策
+
+**为什么先转 Markdown 再切分？**
+- Markdown 有天然的结构标记（标题、段落、代码块、列表）
+- RecursiveCharacterTextSplitter 可以按 Markdown 结构智能切分
+- 比直接从 PDF 提取纯文本再切分质量高得多
+
+**为什么延迟导入 markitdown？**
+- markitdown 是可选依赖，不安装时其他 Loader 仍可用
+- 减少启动时间
+- 未安装时抛出 LoaderError 并提示安装
+
+**metadata 标准字段**：
+```python
+{
+    "source_path": "/path/to/doc.pdf",  # 源文件路径
+    "doc_type": "pdf",                  # 文档类型
+    "title": "文档标题",                  # 从 Markdown # 提取或用文件名
+    "file_name": "doc.pdf",             # 文件名
+    "images": [],                       # 图片列表（当前空，C7 阶段完善）
+}
+```
+
+### 19.5 C3 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| BaseLoader ABC 契约 | 3 | 不可实例化、子类未实现→TypeError、完整实现→可用 |
+| FakeLoader | 4 | 返回 Document、metadata 必需字段、自定义文本 |
+| MarkdownLoader | 5 | 加载 MD、文件不存在、空文件、标题回退到文件名 |
+| TextLoader | 3 | 加载 TXT、文件不存在、空文件 |
+| PdfLoader | 5 | ABC 继承、扩展名、文件不存在、不支持的格式、sample PDF |
+| LoaderFactory | 8 | create 各类型、未知→Error、create_for_file 路由、register() |
+| **合计** | **30** | (29 passed, 1 skipped: sample.pdf 不存在) |
+
+### 19.6 C3 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Loader 的职责边界？" | 格式转换 + 结构抽取，不负责切分（切分由 DocumentChunker 负责） |
+| "为什么要抽象 BaseLoader？" | 统一接口 + 可插拔 + 新增格式不改 Pipeline 代码 |
+| "为什么要先转 Markdown？" | 结构标记 + Splitter 对 Markdown 友好 + 比纯文本切分质量高 |
+| "为什么选 MarkItDown？" | 直接产出 Markdown + 多格式支持 + Microsoft 开源 |
+| "markitdown 未安装怎么办？" | 延迟导入 → LoaderError 提示安装 → 其他 Loader 不受影响 |
+| "metadata 包含什么？" | source_path, doc_type, title, file_name, images |
+| "图片提取失败怎么办？" | 降级跳过，不阻塞文本解析（C7 阶段完善） |
+| "新增格式需要改什么？" | 实现 BaseLoader + 在 _LOADERS 和 _EXT_MAP 注册 |
