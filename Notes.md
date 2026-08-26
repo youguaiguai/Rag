@@ -2821,3 +2821,131 @@ content_hash = hashlib.sha256(content.encode()).hexdigest()[:8]
 | "metadata 包含什么？" | source_path, doc_type, title, file_name, images |
 | "图片提取失败怎么办？" | 降级跳过，不阻塞文本解析（C7 阶段完善） |
 | "新增格式需要改什么？" | 实现 BaseLoader + 在 _LOADERS 和 _EXT_MAP 注册 |
+
+---
+
+## 20. C4 完成：Splitter 集成（DocumentChunker 适配器层）
+
+### 20.1 文件结构
+
+| 文件 | 代码行 | 关键设计 |
+|------|--------|---------|
+| `src/ingestion/chunking/document_chunker.py` | ~240 | 适配器模式，Document→List[Chunk] 转换 + 图片分发 |
+| `src/ingestion/chunking/__init__.py` | 12 | 模块导出（DocumentChunker, ChunkingError） |
+| `tests/unit/test_document_chunker.py` | ~550 | 37 个测试（全部通过） |
+
+### 20.2 核心接口
+
+| 方法 | 签名 | 用途 |
+|------|------|------|
+| `DocumentChunker.__init__` | `(settings: Settings)` | 通过 SplitterFactory 获取 splitter 实例 |
+| `split_document` | `(document: Document) -> List[Chunk]` | 完整的 Document→Chunks 转换流程 |
+| `_generate_chunk_id` | `(doc_id, index, text) -> str` | 生成确定性 Chunk ID（委托 generate_chunk_id） |
+| `_inherit_metadata` | `(document, chunk_index, chunk_text) -> dict` | 元数据继承 + 图片引用按需分发 |
+| `splitter_name` | `-> str` (property) | 返回当前 Splitter 名称 |
+
+### 20.3 DocumentChunker 的 6 个增值功能
+
+| # | 增值功能 | 实现方式 |
+|---|---------|---------|
+| 1 | Chunk ID 生成 | 调用 `generate_chunk_id(doc_id, index, text)` → `{doc_id}_{index:04d}_{hash8}` |
+| 2 | 元数据继承 | 深拷贝 Document.metadata（排除 images）到每个 Chunk.metadata |
+| 3 | 添加 chunk_index | 在 metadata 中记录序号（0-based），用于排序和定位 |
+| 4 | 建立 source_ref | `"{source_path}#chunk={index}"`，支持溯源 |
+| 5 | 图片引用按需分发 | 扫描 `[IMAGE: {id}]` 占位符 → 分发到对应 chunk 的 images/image_refs |
+| 6 | 类型转换 | `List[str]` → `List[Chunk]` 对象，符合 core.types 契约 |
+
+### 20.4 图片分发逻辑
+
+**核心问题**：为什么不能简单继承或丢弃文档级 images？
+
+```
+Document.metadata["images"] = [img_001, img_002, img_003]  # 文档级（全部）
+                    ↓ Splitter 切分
+Chunk 0: "...[IMAGE: img_001]..."  → metadata["images"] = [img_001]  # 子集
+Chunk 1: "plain text..."           → metadata 中无 images 字段      # 不含
+Chunk 2: "...[IMAGE: img_002]..."  → metadata["images"] = [img_002]  # 子集
+```
+
+**分发规则**：
+- `image_refs`：与 chunk 文本中的 `[IMAGE: id]` 占位符一致（去重后）
+- `images`：仅包含在 Document.metadata["images"] 中找到的 ImageRef 子集
+- 无占位符的 chunk：不含 `images` 和 `image_refs` 字段
+- 重复占位符：`image_refs` 去重，`images` 去重
+- 未知 image_id：`image_refs` 包含该 id，`images` 不包含对应 ImageRef
+
+**正则匹配**：`r'\[IMAGE:\s*(\S+?)\s*\]'` 匹配 `[IMAGE: {id}]` 格式
+
+### 20.5 职责边界（面试考点）
+
+| 层 | 输入 → 输出 | 职责 |
+|---|-----------|------|
+| `libs.splitter` | `str → List[str]` | 纯文本切分，不涉及业务对象 |
+| `DocumentChunker` | `Document → List[Chunk]` | 业务适配器：ID + 元数据 + 溯源 + 图片分发 |
+
+**数据流对比**
+```commandline
+DocumentChunker 做的事              RecursiveSplitter 做的事
+                                    
+Document 对象                       
+  ├── text: "RAG 是检索增强..."      "RAG 是检索增强..."
+  ├── doc_id: "doc1"           ──→     │
+  └── metadata: {...}                split_text()
+                                       │
+                                    递归切分：
+                                    1. 按 \n\n 分
+                                    2. 超长的继续按 \n 分
+                                    3. 合并到接近 chunk_size
+                                    4. 添加 overlap
+                                       │
+                                       ▼
+                                    ["RAG 是检索增强...", "生成模型可以..."]
+                                       │
+                               ←── 返回 list[str]
+                                       │
+DocumentChunker 继续处理：              │
+  ├── 生成 chunk_id                   │
+  ├── 继承 metadata                   │
+  ├── 设置 chunk_index                │
+  ├── 建立 source_ref                 │
+  ├── 扫描图片占位符                   │
+  └── 包装成 Chunk 对象               │
+       │                              │
+       ▼                              │
+  list[Chunk]                         │
+  ├── Chunk(chunk_id="doc1_0000_a3f2", doc_id="doc1", text="RAG是...",
+  │         index=0, source_ref="doc.pdf#chunk=0", metadata={...})
+  └── Chunk(chunk_id="doc1_0001_b8c1", doc_id="doc1", text="生成模型...",
+            index=1, source_ref="doc.pdf#chunk=1", metadata={...})
+```
+
+**为什么分离？** → 单一职责原则（SRP）：Splitter 可复用，DocumentChunker 可替换
+
+### 20.6 C4 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 基本切分 | 3 | 返回 Chunk 列表、文本一致、chunk_size 影响数量 |
+| ID 确定性 | 4 | 重复切分 ID 一致、ID 唯一、ID 格式、内容变更 ID 变化 |
+| 元数据继承 | 3 | 字段继承、chunk_index、深拷贝 |
+| source_ref | 2 | 指向父文档、包含 chunk 序号 |
+| 图片分发 | 8 | 有占位符→有 images、无占位符→无 images、refs 一致、子集、去重、未知 id |
+| 异常处理 | 6 | 空文档、Splitter 异常、空结果、全空白、空白过滤、不支持 provider |
+| 配置驱动 | 2 | chunk_size 影响、chunk_overlap 影响 |
+| 类型契约 | 4 | 字段完整、文本非空、index 递增、doc_id 一致 |
+| 属性 | 2 | splitter_name（fake/recursive） |
+| 集成 | 3 | RecursiveSplitter 完整流程、确定性、图片端到端 |
+| **合计** | **37** | (37 passed, 0 failed) |
+
+### 20.7 C4 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "DocumentChunker 做了什么 Splitter 没做的？" | ID 生成 + 元数据继承 + chunk_index + source_ref + 图片分发 + 类型转换 |
+| "为什么用适配器模式？" | libs.splitter 只处理 str→List[str]，不依赖业务对象；DocumentChunker 适配为 Document→List[Chunk] |
+| "Chunk ID 为什么要包含 content_hash？" | 内容变更 → hash 变化 → 新 ID → 增量更新 |
+| "图片分发为什么不能整体继承？" | 下游 C7 ImageCaptioner 需要按 chunk 定位图片，整体继承会导致每个 chunk 都处理全部图片 |
+| "无占位符的 chunk 有 images 字段吗？" | 没有，只有含 [IMAGE: id] 占位符的 chunk 才有 images/image_refs |
+| "image_refs 和 images 的区别？" | image_refs = 占位符中的 id 列表（去重）；images = 在文档 images 中找到的 ImageRef 子集 |
+| "空白片段怎么处理？" | split_document 跳过纯空白片段，只保留有效 chunk |
+| "Splitter 异常怎么处理？" | SplitterError → 包装为 ChunkingError，上层统一捕获 |
