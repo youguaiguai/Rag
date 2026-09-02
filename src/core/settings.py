@@ -146,6 +146,21 @@ class ChunkRefinerSettings:
 
 
 @dataclass
+class MetadataEnricherSettings:
+    """MetadataEnricher 配置（C6：title/summary/tags 元数据增强）
+
+    接口签名：MetadataEnricherSettings(use_llm: bool, prompt_path: str, max_tags: int)
+    关键字段：
+      - use_llm: 是否启用 LLM 语义增强（关闭时仅规则提取，省成本）
+      - prompt_path: LLM 增强 prompt 模板路径
+      - max_tags: tags 最大数量
+    """
+    use_llm: bool = False
+    prompt_path: str = "config/prompts/metadata_enrichment.txt"
+    max_tags: int = 5
+
+
+@dataclass
 class IngestionSettings:
     """Ingestion Pipeline 配置（C5+）
 
@@ -153,6 +168,7 @@ class IngestionSettings:
     知识点：Ingestion 阶段的组件开关集中在 ingestion 节管理
     """
     chunk_refiner: ChunkRefinerSettings = field(default_factory=ChunkRefinerSettings)
+    metadata_enricher: MetadataEnricherSettings = field(default_factory=MetadataEnricherSettings)
 
 
 @dataclass
@@ -385,6 +401,7 @@ _FIELD_TYPE_MAP: dict[tuple[str, str], type] = {
     ("Settings", "dashboard"): DashboardSettings,
     ("Settings", "ingestion"): IngestionSettings,
     ("IngestionSettings", "chunk_refiner"): ChunkRefinerSettings,
+    ("IngestionSettings", "metadata_enricher"): MetadataEnricherSettings,
 }
 
 

@@ -81,3 +81,7 @@ ingestion:
   chunk_refiner:
     use_llm: false                  # 是否启用 LLM 智能增强（关闭时仅规则去噪，省成本）
     prompt_path: ./config/prompts/chunk_refinement.txt
+  metadata_enricher:
+    use_llm: false                  # 是否启用 LLM 语义增强（关闭时仅规则提取 title/summary/tags）
+    prompt_path: ./config/prompts/metadata_enrichment.txt
+    max_tags: 5                     # tags 最大数量

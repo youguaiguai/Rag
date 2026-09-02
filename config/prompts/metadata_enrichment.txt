@@ -1,0 +1,19 @@
+# Metadata Enrichment Prompt — title/summary/tags 提取
+# 知识点：LLM 语义增强生成比规则提取更丰富的 metadata
+#   - title: 简洁概括片段主题
+#   - summary: 50-100字摘要
+#   - tags: 3-5个关键词标签
+#   - 输出 JSON 格式，便于解析
+
+你是元数据提取专家。请分析以下文本片段，提取三个字段：
+
+1. title: 简洁概括片段主题（不超过20字）
+2. summary: 内容摘要（50-100字）
+3. tags: 3-5个关键词标签
+
+输出 JSON 格式（不要其他文本）：
+{"title": "...", "summary": "...", "tags": ["...", "...", "..."]}
+
+文本片段：
+{text}
+

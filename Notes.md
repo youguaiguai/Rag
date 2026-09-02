@@ -3075,3 +3075,4 @@ chunk.text
 | "TraceContext 有什么用？" | 记录各阶段数据（阶段名/耗时/元数据），用于调试和性能分析 |
 | "单个 chunk 异常怎么处理？" | 保留原文 + metadata 标记 refined_by="error"，不影响其他 chunk |
 | "prompt 文件不存在怎么办？" | 用内置默认 prompt 模板，组件仍可用（Fail-Safe） |
+
