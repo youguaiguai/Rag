@@ -1,0 +1,117 @@
+{
+  "typical_noise_scenario": {
+    "description": "综合噪声：多余空白 + 分隔线 + HTML 注释 + 页码",
+    "input": "第一章 系统架构简介\n\n<!-- 这是HTML注释应该被移除 -->\n\n本系统采用模块化设计。  各模块之间通过接口通信。\n\n\n\n----------------\n\n第 3 页\n\n模块之间的依赖关系如图所示。",
+    "expected_contains": [
+      "第一章 系统架构简介",
+      "本系统采用模块化设计。 各模块之间通过接口通信。",
+      "模块之间的依赖关系如图所示。"
+    ],
+    "expected_absent": [
+      "第 3 页",
+      "----------------",
+      "HTML注释应该被移除"
+    ]
+  },
+  "ocr_errors": {
+    "description": "OCR 噪声：零宽字符 + 控制字符，正常文本应保留",
+    "input": "向量数据库\u200b是一种专门存储\u200b\u200b向量的系统。\n\u00a0支持高效的相似度检索。\n\ufffe嵌入模型将文本转换为向量表示。",
+    "expected_contains": [
+      "向量数据库",
+      "是一种专门存储",
+      "向量的系统。",
+      "支持高效的相似度检索。",
+      "嵌入模型将文本转换为向量表示。"
+    ],
+    "expected_absent": [
+      "\u200b"
+    ]
+  },
+  "page_header_footer": {
+    "description": "页眉页脚模式：多种页码格式（中文/英文/带横线/分数）",
+    "input": "Page 1 of 10\n\n检索增强生成的核心流程。\n\n- 5 -\n\n包括文档加载、切分、嵌入。\n\nPage 6\n\n第 12 页，共 45 页\n\n最后存储到向量数据库。\n\n3/10",
+    "expected_contains": [
+      "检索增强生成的核心流程。",
+      "包括文档加载、切分、嵌入。",
+      "最后存储到向量数据库。"
+    ],
+    "expected_absent": [
+      "Page 1 of 10",
+      "- 5 -",
+      "Page 6",
+      "第 12 页",
+      "3/10"
+    ]
+  },
+  "excessive_whitespace": {
+    "description": "多余空白：行内连续空格 + 3个以上连续换行",
+    "input": "文本切分    是 RAG 的关键    环节。\n\n\n\n\n切分策略    影响检索质量。\n\n\n太大召回噪音多，太小丢失上下文。",
+    "expected_contains": [
+      "文本切分 是 RAG 的关键 环节。",
+      "切分策略 影响检索质量。",
+      "太大召回噪音多，太小丢失上下文。"
+    ],
+    "expected_absent": [
+      "    "
+    ]
+  },
+  "format_markers": {
+    "description": "格式标记：HTML 注释 + Markdown 分隔线（表格分隔行应保留）",
+    "input": "<!-- TODO: 待补充内容 -->\n\n## 配置说明\n\n以下是支持的配置项：\n\n| 配置项 | 说明 |\n|--------|------|\n| chunk_size | 块大小 |\n| overlap | 重叠 |\n\n====\n\n配置通过 settings.yaml 管理。",
+    "expected_contains": [
+      "## 配置说明",
+      "| 配置项 | 说明 |",
+      "|--------|------|",
+      "| chunk_size | 块大小 |",
+      "| overlap | 重叠 |",
+      "配置通过 settings.yaml 管理。"
+    ],
+    "expected_absent": [
+      "TODO: 待补充内容",
+      "===="
+    ]
+  },
+  "clean_text": {
+    "description": "干净文本：验证不过度清理（内容应原样保留）",
+    "input": "# 系统设计文档\n\n## 数据流\n\n文档先经过 Loader 加载，再由 Splitter 切分。\n\n切分后的 chunk 经过嵌入模型转换为向量。\n\n## 存储层\n\n向量存储在 Chroma 数据库中。",
+    "expected_contains": [
+      "# 系统设计文档",
+      "## 数据流",
+      "文档先经过 Loader 加载，再由 Splitter 切分。",
+      "切分后的 chunk 经过嵌入模型转换为向量。",
+      "## 存储层",
+      "向量存储在 Chroma 数据库中。"
+    ],
+    "expected_absent": []
+  },
+  "code_blocks": {
+    "description": "代码块：内部格式必须原样保留（缩进/空白有语法意义）",
+    "input": "示例代码如下：\n\n```python\ndef   process(  data ):\n    if   data:\n        return    data [ 0 ]\n```\n\n代码说明：处理数据。",
+    "expected_contains": [
+      "示例代码如下：",
+      "def   process(  data ):",
+      "    if   data:",
+      "        return    data [ 0 ]",
+      "代码说明：处理数据。"
+    ],
+    "expected_absent": []
+  },
+  "mixed_noise": {
+    "description": "真实混合场景：OCR 零宽字符 + 页码 + 空白 + 注释 + 代码块共存",
+    "input": "\u200b混合场景测试。\n<!-- draft -->\nPage 2\n\n实际的文档  往往同时包含多种噪声。\n\n\n```\nSELECT *  FROM documents;\n```\n\n\n-----\n\n\n第 8 页\n查询结果会返回给上层应用。",
+    "expected_contains": [
+      "混合场景测试。",
+      "实际的文档 往往同时包含多种噪声。",
+      "SELECT *  FROM documents;",
+      "查询结果会返回给上层应用。"
+    ],
+    "expected_absent": [
+      "\u200b",
+      "<!-- draft -->",
+      "Page 2",
+      "-----",
+      "第 8 页"
+    ]
+  }
+}
+

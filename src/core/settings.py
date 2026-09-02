@@ -133,6 +133,29 @@ class SplitterSettings:
 
 
 @dataclass
+class ChunkRefinerSettings:
+    """ChunkRefiner 配置（C5：规则去噪 + 可选 LLM 增强）
+
+    接口签名：ChunkRefinerSettings(use_llm: bool, prompt_path: str)
+    关键字段：
+      - use_llm: 是否启用 LLM 智能增强（关闭时仅用规则去噪，省成本）
+      - prompt_path: LLM 增强 prompt 模板路径
+    """
+    use_llm: bool = False
+    prompt_path: str = "config/prompts/chunk_refinement.txt"
+
+
+@dataclass
+class IngestionSettings:
+    """Ingestion Pipeline 配置（C5+）
+
+    接口签名：IngestionSettings(chunk_refiner: ChunkRefinerSettings)
+    知识点：Ingestion 阶段的组件开关集中在 ingestion 节管理
+    """
+    chunk_refiner: ChunkRefinerSettings = field(default_factory=ChunkRefinerSettings)
+
+
+@dataclass
 class VectorStoreSettings:
     """向量存储配置
 
@@ -248,6 +271,7 @@ class Settings:
     evaluation: EvaluationSettings = field(default_factory=EvaluationSettings)
     observability: ObservabilitySettings = field(default_factory=ObservabilitySettings)
     dashboard: DashboardSettings = field(default_factory=DashboardSettings)
+    ingestion: IngestionSettings = field(default_factory=IngestionSettings)
 
 
 # ============================================================
@@ -359,6 +383,8 @@ _FIELD_TYPE_MAP: dict[tuple[str, str], type] = {
     ("Settings", "observability"): ObservabilitySettings,
     ("Settings", "splitter"): SplitterSettings,
     ("Settings", "dashboard"): DashboardSettings,
+    ("Settings", "ingestion"): IngestionSettings,
+    ("IngestionSettings", "chunk_refiner"): ChunkRefinerSettings,
 }
 
 

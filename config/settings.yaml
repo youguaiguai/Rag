@@ -75,3 +75,9 @@ dashboard:
   traces_dir: ./logs
   auto_refresh: true
   refresh_interval: 5
+
+# ---- Ingestion Pipeline 配置 ----
+ingestion:
+  chunk_refiner:
+    use_llm: false                  # 是否启用 LLM 智能增强（关闭时仅规则去噪，省成本）
+    prompt_path: ./config/prompts/chunk_refinement.txt

@@ -2949,3 +2949,129 @@ DocumentChunker 继续处理：              │
 | "image_refs 和 images 的区别？" | image_refs = 占位符中的 id 列表（去重）；images = 在文档 images 中找到的 ImageRef 子集 |
 | "空白片段怎么处理？" | split_document 跳过纯空白片段，只保留有效 chunk |
 | "Splitter 异常怎么处理？" | SplitterError → 包装为 ChunkingError，上层统一捕获 |
+
+---
+
+## 21. C5 完成：Transform 抽象基类 + ChunkRefiner（规则去噪 + LLM 增强 + 降级）
+
+### 21.1 文件结构
+
+| 文件 | 代码行 | 关键设计 |
+|------|--------|---------|
+| `src/core/trace/trace_context.py` | ~120 | TraceContext 最小实现（trace_id + record_stage + finish） |
+| `src/core/trace/__init__.py` | 8 | 模块导出 |
+| `src/ingestion/transform/base_transform.py` | ~80 | BaseTransform ABC + TransformError |
+| `src/ingestion/transform/chunk_refiner.py` | ~310 | 规则去噪 + LLM 增强 + 失败降级 |
+| `src/ingestion/transform/__init__.py` | 16 | 模块导出 |
+| `config/prompts/chunk_refinement.txt` | 16 | LLM 增强 prompt 模板（{text} 占位符） |
+| `tests/fixtures/noisy_chunks.json` | ~120 | 8 个典型噪声场景（fixtures 驱动测试） |
+| `tests/unit/test_chunk_refiner.py` | ~370 | 28 个单元测试（Mock LLM，全部通过） |
+| `tests/integration/test_chunk_refiner_llm.py` | ~170 | 4 个集成测试（无 API key 自动 skip） |
+
+### 21.2 核心接口
+
+| 方法/类 | 签名 | 用途 |
+|---------|------|------|
+| `BaseTransform.transform` | `(chunks, trace?) -> List[Chunk]` | 抽象方法，子类必须实现 |
+| `ChunkRefiner.__init__` | `(settings, llm?, prompt_path?)` | 依赖注入 LLM + 加载 prompt |
+| `ChunkRefiner.transform` | `(chunks, trace?) -> List[Chunk]` | 主入口：规则去噪 → LLM 增强 → 降级 |
+| `ChunkRefiner._rule_based_refine` | `(text: str) -> str` | 确定性规则去噪（正则 + 代码块保护） |
+| `ChunkRefiner._llm_refine` | `(text, trace?) -> (str\|None, str\|None)` | LLM 增强，失败返回 (None, reason) |
+| `ChunkRefiner._load_prompt` | `(prompt_path?) -> str` | 从文件加载 prompt，支持内置 fallback |
+| `TraceContext.record_stage` | `(stage, data?, duration_ms?)` | 记录阶段数据 |
+| `TraceContext.finish` | `-> dict` | 汇总所有阶段，返回可序列化 dict |
+
+### 21.3 两阶段清洗策略
+
+```
+chunk.text
+  │
+  ├─ 1. 规则去噪（确定性，零成本，始终执行）
+  │    ├─ 去除不可见字符（零宽空格/控制字符/Unicode 非字符）
+  │    ├─ 去除 HTML 注释 <!-- -->
+  │    ├─ 去除页码行（第X页/Page X/- X -/X/Y）
+  │    ├─ 去除分隔线（---/===/***，3+ 符号）
+  │    ├─ 行内空白合并 + 行首尾 strip
+  │    └─ 3+ 连续换行 → 2 个换行
+  │
+  ├─ 2. LLM 增强（可选，非确定性，失败降级）
+  │    ├─ 用规则去噪后的文本填充 {text} 占位符
+  │    ├─ 调用 LLM.chat(messages)
+  │    └─ 成功：返回 LLM 重写文本，refined_by="llm"
+  │       失败：返回 None + fallback 原因
+  │
+  └─ 降级路径（LLM 失败时）
+       ├─ 使用规则去噪结果
+       ├─ metadata["refined_by"] = "rule"
+       └─ metadata["refinement_fallback"] = 原因
+```
+
+**顺序很重要（面试考点）**：先规则后 LLM → LLM 拿到已去噪的干净文本，prompt 更短更准 + 成本更低
+
+### 21.4 代码块保护机制
+
+```python
+# 原始文本
+"示例代码：\n```python\ndef   process(  data ):\n    if   data:\n        return    data [ 0 ]\n```\n说明文字。"
+
+# 规则去噪后（代码块内部格式不变，外部去噪）
+"示例代码：\n```python\ndef   process(  data ):\n    if   data:\n        return    data [ 0 ]\n```\n说明文字。"
+```
+
+- 按 ``` 分离文本段，奇数部分是代码内容（原样保留），偶数部分应用去噪规则
+- 代码块内的缩进/空白/符号有语法意义（Python 缩进），不能被空白规则破坏
+
+### 21.5 降级机制设计
+
+| 触发场景 | fallback 原因 | metadata 标记 |
+|---------|--------------|---------------|
+| LLM API 异常 | `llm_error: <详情>` | `refined_by="rule"` + `refinement_fallback` |
+| 意外异常（非 LLMError） | `llm_unexpected_error: <详情>` | `refined_by="rule"` + `refinement_fallback` |
+| LLM 返回空 | `llm_empty_response` | `refined_by="rule"` + `refinement_fallback` |
+| LLM 工厂创建失败 | use_llm 降级为 False | `refined_by="rule"`（无 fallback 标记） |
+| 单 chunk 处理异常 | `exception: <详情>` | `refined_by="error"` + `refinement_fallback` |
+
+**Fail-Safe vs Fail-Fast**：Transform 链中 Fail-Safe（降级继续），配置加载 Fail-Fast（立即崩溃）
+
+### 21.6 8 个噪声场景（fixtures）
+
+| 场景 | 描述 | 关键验证 |
+|------|------|---------|
+| typical_noise_scenario | 多余空白 + 分隔线 + HTML 注释 + 页码 | 综合噪声去除 |
+| ocr_errors | 零宽字符 + Unicode 非字符 | 不可见字符去除 |
+| page_header_footer | 4 种页码格式 | 页码行去除 |
+| excessive_whitespace | 行内连续空格 + 多换行 | 空白合并 |
+| format_markers | HTML 注释 + 分隔线（表格分隔行保留） | 不误伤表格 |
+| clean_text | 干净 Markdown 文本 | 不过度清理 |
+| code_blocks | 代码块含特殊缩进 | 代码格式保留 |
+| mixed_noise | 零宽字符 + 页码 + 空白 + 注释 + 代码块 | 混合场景 |
+
+### 21.7 C5 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| BaseTransform ABC 契约 | 3 | 不可实例化、子类未实现→TypeError、完整实现→可用 |
+| TraceContext | 3 | trace_id 唯一、record_stage 存储、finish 汇总 |
+| 规则去噪 fixtures | 8 | 8 个噪声场景参数化测试 |
+| 保留能力 | 2 | Markdown 结构保留、[IMAGE: id] 占位符保留 |
+| LLM 模式 | 3 | 成功返回、收到规则去噪后文本、空响应降级 |
+| 降级行为 | 3 | LLMError 降级、意外异常降级、工厂失败降级 |
+| 配置开关 | 3 | use_llm=False 不调用、True 调用、settings.yaml 加载 |
+| Prompt 加载 | 2 | 文件加载 + fallback 默认 |
+| 异常隔离 | 1 | 单 chunk 异常不影响其他 |
+| **单元合计** | **28** | (28 passed) |
+| LLM 集成 | 4 | 真实调用 + 质量 + 降级 + trace（无 key skip） |
+
+### 21.8 C5 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "ChunkRefiner 做了什么？" | 规则去噪（确定性）+ 可选 LLM 增强（语义级清洗）+ 失败降级（不阻塞 ingestion） |
+| "为什么规则在前 LLM 在后？" | 降成本（LLM 拿到干净文本 prompt 更短）+ 确定性兜底（LLM 失败有规则结果） |
+| "LLM 失败怎么办？" | 降级到规则结果，metadata 标记 refined_by="rule" + fallback 原因，不阻塞 Pipeline |
+| "代码块为什么不能去空白？" | Python 缩进有语法意义，去空白会破坏代码 |
+| "Fail-Safe 和 Fail-Fast 的区别？" | Fail-Safe：数据处理降级继续；Fail-Fast：配置错误立即崩溃 |
+| "什么是 Mock vs Stub？" | Stub 返回固定值（FakeLLM）；Mock 记录调用 + 可配置行为 + 可验证调用次数 |
+| "TraceContext 有什么用？" | 记录各阶段数据（阶段名/耗时/元数据），用于调试和性能分析 |
+| "单个 chunk 异常怎么处理？" | 保留原文 + metadata 标记 refined_by="error"，不影响其他 chunk |
+| "prompt 文件不存在怎么办？" | 用内置默认 prompt 模板，组件仍可用（Fail-Safe） |
