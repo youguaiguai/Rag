@@ -161,6 +161,18 @@ class MetadataEnricherSettings:
 
 
 @dataclass
+class ImageCaptionerSettings:
+    """ImageCaptioner 配置（C7：Vision LLM 生成图片描述）
+
+    接口签名：ImageCaptionerSettings(prompt_path: str)
+    关键字段：
+      - prompt_path: 图片描述 prompt 模板路径
+      - enabled 由 settings.vision_llm.enabled 控制，此处不再重复
+    """
+    prompt_path: str = "config/prompts/image_captioning.txt"
+
+
+@dataclass
 class IngestionSettings:
     """Ingestion Pipeline 配置（C5+）
 
@@ -169,6 +181,7 @@ class IngestionSettings:
     """
     chunk_refiner: ChunkRefinerSettings = field(default_factory=ChunkRefinerSettings)
     metadata_enricher: MetadataEnricherSettings = field(default_factory=MetadataEnricherSettings)
+    image_captioner: ImageCaptionerSettings = field(default_factory=ImageCaptionerSettings)
 
 
 @dataclass
@@ -402,6 +415,7 @@ _FIELD_TYPE_MAP: dict[tuple[str, str], type] = {
     ("Settings", "ingestion"): IngestionSettings,
     ("IngestionSettings", "chunk_refiner"): ChunkRefinerSettings,
     ("IngestionSettings", "metadata_enricher"): MetadataEnricherSettings,
+    ("IngestionSettings", "image_captioner"): ImageCaptionerSettings,
 }
 
 

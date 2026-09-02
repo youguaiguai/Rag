@@ -85,3 +85,5 @@ ingestion:
     use_llm: false                  # 是否启用 LLM 语义增强（关闭时仅规则提取 title/summary/tags）
     prompt_path: ./config/prompts/metadata_enrichment.txt
     max_tags: 5                     # tags 最大数量
+  image_captioner:
+    prompt_path: ./config/prompts/image_captioning.txt  # 图片描述 prompt 模板（enabled 由 vision_llm.enabled 控制）
