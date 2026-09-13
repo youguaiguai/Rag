@@ -3340,6 +3340,91 @@ Dense 编码器可选（注入 None 时跳过 Dense 编码），Sparse 编码器
 | "Dense 编码器可选吗？" | 是的，注入 None 时跳过 Dense，只做 Sparse 编码 |
 | "每批耗时怎么记录？" | trace 的 batches 数组记录每批的 index/chunks/dense/sparse/duration_ms |
 
+---
+
+## 27. C11：BM25Indexer（倒排索引构建与持久化）
+
+### 27.1 设计目标
+
+接收 SparseEncoder 的 `list[SparseVector]`，计算 IDF，构建倒排索引，持久化到 `data/db/bm25/`。
+
+摄取链路位置：... → SparseEncoder → **BM25Indexer** → data/db/bm25/
+检索链路位置：query → tokenizer → **BM25Indexer.search()** → top_k chunk_ids
+
+### 27.2 倒排索引结构
+
+```json
+{
+  "N": 3,
+  "avgdl": 2.67,
+  "k1": 1.2,
+  "b": 0.75,
+  "index": {
+    "database": {
+      "idf": 0.470,
+      "postings": [
+        {"chunk_id": "c0", "tf": 1.0, "doc_length": 3},
+        {"chunk_id": "c1", "tf": 1.0, "doc_length": 3}
+      ]
+    }
+  }
+}
+```
+
+### 27.3 IDF 计算
+
+公式：`IDF(term) = ln((N - df + 0.5) / (df + 0.5) + 1)`
+
+| Term | DF | N | IDF | 含义 |
+|------|----|---|-----|------|
+| database | 2 | 3 | 0.470 | 出现在 2/3 文档中，较常见 |
+| index | 1 | 3 | 0.981 | 只在 1 个文档中，较稀有 |
+
+**+1 的作用**：防止 IDF 为负值（当 df > N/2 时经典 IDF 会产生负值）。
+
+### 27.4 核心方法
+
+| 方法 | 功能 | 场景 |
+|------|------|------|
+| `build(vectors)` | 全量构建索引 | 首次构建 |
+| `load()` | 从文件加载索引 | 服务启动 |
+| `search(query_terms, top_k)` | BM25 查询返回 top_k | 检索 |
+| `rebuild(vectors)` | 清空重建 | 手动重建 |
+| `upsert(vectors)` | 增量更新（新增/更新文档） | 增量摄取 |
+
+**build vs upsert**：build 清空旧索引全量重建，upsert 合并新旧文档后重建。
+**upsert 实现**：从现有索引提取已有 SparseVector，合并新文档，重新 build（正确性优先，性能可优化）。
+
+### 27.5 查询效率
+
+倒排索引查询复杂度：O(Σ |postings(term)|) — 只遍历包含 query term 的文档，非全量扫描。
+
+### 27.6 C11 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 构建基础 | 3 | 基本构建、空列表、文件持久化 |
+| IDF 准确性 | 2 | IDF 值一致、稀有 term IDF 更高 |
+| 查询 | 3 | 返回匹配文档、top_k 限制、分数降序 |
+| 持久化 round-trip | 3 | build→load→查询一致、文件不存在抛异常、统计数据一致 |
+| 重建 | 1 | rebuild 替换旧索引 |
+| 增量更新 | 2 | upsert 新增文档、upsert 更新已有文档 |
+| 边界 + 属性 | 2 | 空索引查询、无匹配返回空 |
+| **单元合计** | **16** | 16 passed |
+| 全量测试 | 680 | 680 passed, 5 skipped |
+
+### 27.7 C11 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "BM25Indexer 做了什么？" | 接收 SparseVector，计算 IDF，构建倒排索引，持久化到文件系统 |
+| "为什么叫倒排索引？" | 反转了映射方向：term→doc（而非 doc→term），查询时直接定位包含 query term 的文档 |
+| "IDF 公式 +1 的作用？" | 防止 IDF 为负值（当 df > N/2 时经典 IDF 会产生负值） |
+| "build 和 upsert 的区别？" | build 清空重建，upsert 合并新旧文档后重建 |
+| "为什么用 JSON 持久化？" | 可读性好 + 调试方便 + 跨语言兼容（生产可用 binary 提升性能） |
+| "倒排索引查询为什么快？" | 只遍历包含 query term 的文档（O(Σ|postings|)），非全量扫描 |
+| "增量更新怎么实现？" | 从现有索引提取已有 SparseVector，合并新文档后重新 build |
+
 
 
 
