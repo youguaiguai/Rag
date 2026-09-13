@@ -3818,6 +3818,99 @@ class ProcessedQuery:
 | "Trace 怎么用？" | 可选参数，记录 raw_query/keywords_count/filters keys/duration_ms |
 | "为什么不用 jieba？" | 减少外部依赖 + Bigram 足够用于 BM25 关键词检索 |
 
+---
+
+## 33. D2：DenseRetriever（Query Embedding + VectorStore 检索）
+
+### 33.1 设计目标
+
+实现 `dense_retriever.py`：组合 `EmbeddingClient`（query 向量化）+ `VectorStore`（向量检索），完成语义召回。
+
+- Query → Embedding → VectorStore.query() → QueryResult → RetrievalResult
+- 支持依赖注入（embedding_client/vector_store 可选），便于测试隔离
+- Fail-Fast：Embedding/VectorStore 失败直接抛异常，由 HybridSearch 负责降级
+
+### 33.2 架构设计
+
+```
+用户查询 (query: str, top_k: int, filters: dict | None)
+    │
+    ▼
+DenseRetriever.retrieve()
+    ├── 1. 校验 query 非空（Fail-Fast，抛 ValueError）
+    ├── 2. embedding_client.embed([query]) → query_vector
+    │       （embed 接受 list[str]，返回 list[list[float]]，取 [0]）
+    ├── 3. vector_store.query(vector, top_k, filters) → list[QueryResult]
+    ├── 4. QueryResult → RetrievalResult
+    │       └── 字段映射：id → chunk_id（字段重命名）
+    │       └── metadata 浅拷贝（避免共享引用）
+    └── 5. 记录 trace（query, top_k, result_count, embed/query duration）
+    │
+    ▼
+list[RetrievalResult]
+    ├── chunk_id: 匹配的 Chunk ID
+    ├── score: cosine similarity 分数
+    ├── text: 匹配的文本片段
+    └── metadata: 元数据（doc_type, title, source_ref 等）
+```
+
+#### RetrievalResult 数据契约（types.py 新增）
+
+```python
+@dataclass
+class RetrievalResult:
+    chunk_id: str                    # Chunk ID（从 QueryResult.id 映射）
+    score: float                     # 相似度分数
+    text: str                        # 匹配文本
+    metadata: dict[str, Any] = field(default_factory=dict)  # 元数据
+```
+
+#### QueryResult vs RetrievalResult（面试必问）
+
+| 维度 | QueryResult | RetrievalResult |
+|------|-------------|-----------------|
+| 所属层 | libs 层（VectorStore 输出） | core 层（检索引擎输出） |
+| id 字段 | `id: str` | `chunk_id: str`（语义更明确） |
+| 用途 | 向量数据库返回格式 | Dense/Sparse/Hybrid 统一格式 |
+
+#### 关键设计决策
+
+| 决策 | 选择 | 原因 |
+|------|------|------|
+| 异常策略 | Fail-Fast | HybridSearch 层负责降级（Dense 失败→只用 Sparse） |
+| 依赖注入 | embedding_client/vector_store 可选 | 测试隔离 + 生产环境工厂创建 |
+| metadata 处理 | 浅拷贝 | 避免外部修改影响检索结果 |
+| filters 透传 | 原样传递给 VectorStore | DenseRetriever 不处理过滤逻辑 |
+
+### 33.3 D2 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| RetrievalResult 数据契约 | 5 | chunk_id/score/text/metadata 字段存在且默认值正确 |
+| 基础检索流程 | 4 | 返回结果、embed 调用验证、query 调用验证、score 降序 |
+| 字段映射 | 3 | id→chunk_id、score/text 保留、metadata 浅拷贝 |
+| filters 透传 | 3 | None 透传、dict 透传、空 dict 透传 |
+| top_k 透传 | 2 | 默认 top_k=10、自定义 top_k |
+| 依赖注入 | 2 | 注入实例被使用、只读属性返回注入实例 |
+| 异常处理 | 3 | 空查询、Embedding 失败、VectorStore 失败 |
+| Trace 集成 | 2 | trace 记录正确、无 trace 不报错 |
+| 只读属性 | 1 | embedding_client/vector_store 属性可访问 |
+| **D2 合计** | **25** | 25 passed |
+
+### 33.4 D2 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "DenseRetriever 做了什么？" | query → embed → vector_store.query → RetrievalResult |
+| "RetrievalResult 和 QueryResult 的区别？" | 层级不同，QueryResult 是 libs 层，RetrievalResult 是 core 层，id → chunk_id |
+| "为什么需要统一格式？" | Dense/Sparse/Hybrid 三路检索结果需要统一格式才能融合 |
+| "DenseRetriever 怎么做依赖注入？" | __init__ 接受可选 embedding_client/vector_store，不注入时工厂创建 |
+| "DenseRetriever 失败怎么处理？" | Fail-Fast，异常透传，由 HybridSearch 负责降级到单路结果 |
+| "filters 怎么处理？" | 原样透传给 VectorStore，DenseRetriever 不处理过滤逻辑 |
+| "metadata 为什么要浅拷贝？" | 避免外部修改影响检索结果（QueryResult.metadata 可能被共享） |
+| "Trace 记录了什么？" | query, top_k, result_count, embed/query duration_ms, embedding_model |
+| "为什么 embed 返回 list[list[float]]？" | 批量处理设计，查询只有一条文本，取 results[0] |
+
 
 
 

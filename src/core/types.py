@@ -331,3 +331,49 @@ class ProcessedQuery:
     keywords: list[str] = field(default_factory=list)
     filters: dict[str, Any] = field(default_factory=dict)
 
+
+# ============================================================
+# RetrievalResult — 检索结果（Dense/Sparse/Hybrid 统一输出）
+# ============================================================
+
+@dataclass
+class RetrievalResult:
+    """检索结果 — DenseRetriever/SparseRetriever/HybridSearch 的统一输出
+
+    知识点：RetrievalResult 在检索链路中的位置
+      1. DenseRetriever.retrieve() → list[RetrievalResult]（语义召回）
+      2. SparseRetriever.retrieve() → list[RetrievalResult]（关键词召回）
+      3. Fusion.fuse() → list[RetrievalResult]（融合后统一排序）
+      4. Reranker.rerank() → list[RetrievalResult]（精排后最终结果）
+
+    与 QueryResult 的区别（面试必问）：
+      | 维度 | QueryResult | RetrievalResult |
+      |------|-------------|-----------------|
+      | 所属层 | libs 层（VectorStore 输出） | core 层（检索引擎输出） |
+      | id 字段 | id: str | chunk_id: str（语义更明确） |
+      | 用途 | 向量数据库返回格式 | 检索链路统一格式 |
+      - QueryResult → RetrievalResult 的转换在 DenseRetriever 中完成
+
+    接口签名：RetrievalResult(chunk_id, score, text, metadata)
+    字段说明：
+      - chunk_id: 匹配的 Chunk ID（与 ChunkRecord.chunk_id 一致，用于溯源）
+      - score: 相似度分数（Dense: cosine similarity; Sparse: BM25 score; Fusion: RRF score）
+      - text: 匹配的文本片段（展示给用户）
+      - metadata: 元数据（doc_type, title, source_ref 等，用于展示和过滤）
+
+    契约约束：
+      - chunk_id: 非空字符串
+      - score: float 类型
+      - text: 字符串（可为空，但通常应有值）
+      - metadata: dict 类型
+
+    面试考点：
+      "RetrievalResult 和 QueryResult 的区别？" → 层级不同，QueryResult 是 libs 层，
+        RetrievalResult 是 core 层，字段名 chunk_id 比 id 语义更明确
+      "为什么需要统一格式？" → Dense/Sparse/Hybrid 三路检索结果需要统一格式才能融合
+    """
+    chunk_id: str
+    score: float
+    text: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
