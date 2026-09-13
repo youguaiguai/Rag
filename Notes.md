@@ -3730,6 +3730,94 @@ def collect_files(path: str) -> list[str]:
 | "跳过的文件算失败吗？" | 不算，退出码 0（只有全部失败才返回 1） |
 | "目录摄取怎么实现？" | 递归扫描支持扩展名（.pdf/.md/.txt/.docx），sorted 排序 |
 
+---
+
+## 32. D1：QueryProcessor（关键词提取 + filters 结构）
+
+### 32.1 设计目标
+
+实现 `query_processor.py`：将用户原始查询字符串转化为结构化 `ProcessedQuery`，供后续检索链路使用。
+
+- 关键词提取（规则/分词）：英文 3+ 字母词 + 中文 Bigram，去停用词，去重
+- filters 解析：None → {}，dict → 原样透传（浅拷贝）
+- 与 SparseEncoder 分词策略对齐：保证查询和文档使用相同分词方式（BM25 词项对齐）
+
+### 32.2 架构设计
+
+```
+用户查询 (query: str, filters: dict | None)
+    │
+    ▼
+QueryProcessor.process()
+    ├── 1. 校验 query 非空（Fail-Fast，抛 ValueError）
+    ├── 2. _extract_keywords(query)
+    │       ├── 英文：正则 [a-zA-Z]{3,} → 小写化 → 去停用词
+    │       ├── 中文：Bigram（2-gram）→ 去重
+    │       └── 去重：保持首次出现顺序
+    ├── 3. _parse_filters(filters)
+    │       ├── None → {}
+    │       ├── dict → 浅拷贝返回
+    │       └── 非 dict → 容错降级为 {}
+    └── 4. 记录 trace（可选）
+    │
+    ▼
+ProcessedQuery(raw_query, keywords, filters)
+    ├── raw_query → DenseRetriever（语义向量检索）
+    ├── keywords  → SparseRetriever（BM25 关键词检索）
+    └── filters   → HybridSearch（metadata 过滤）
+```
+
+#### ProcessedQuery 数据契约（types.py 新增）
+
+```python
+@dataclass
+class ProcessedQuery:
+    raw_query: str                          # 原始查询（DenseRetriever 用于 embedding）
+    keywords: list[str] = field(default_factory=list)  # 关键词（SparseRetriever 用于 BM25）
+    filters: dict[str, Any] = field(default_factory=dict)  # 过滤条件（HybridSearch 用于 metadata 过滤）
+```
+
+#### 关键设计决策
+
+| 决策 | 选择 | 原因 |
+|------|------|------|
+| 分词策略 | 英文 {3,} + 中文 Bigram | 与 SparseEncoder 对齐，BM25 词项匹配 |
+| 查询端去重 | 是（只保留首次出现） | 查询只需词项，不需要词频 |
+| 文档端去重 | 否（SparseEncoder 保留重复） | BM25 需要词频统计 |
+| filters 解析 | 最小实现：原样透传 | 当前阶段不解析复杂过滤语法 |
+| 异常策略 | Fail-Fast（空查询抛 ValueError） | 入口必须保证数据有效性 |
+| 停用词表 | 与 SparseEncoder._EN_STOP_WORDS 对齐 | 保证一致性 |
+
+### 32.3 D1 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| ProcessedQuery 数据契约 | 4 | raw_query/keywords/filters 字段存在且默认值正确 |
+| 英文关键词提取 | 5 | 简单英文、短词过滤、大小写、数字标点、非空保证 |
+| 中文关键词提取 | 4 | 简单中文、单字无 bigram、两字一个 bigram、长文本多 bigram |
+| 混合文本关键词提取 | 3 | 中英混合、停用词过滤、顺序保持 |
+| 停用词过滤 | 3 | 常见停用词、全停用词空列表、大小写不敏感 |
+| 去重逻辑 | 2 | 英文去重、中文 bigram 去重 |
+| filters 解析 | 4 | None→{}、dict 透传、浅拷贝、非 dict 降级 |
+| 异常处理 | 2 | 空查询、纯空白查询 |
+| Trace 集成 | 2 | 参数化：英文+中文，trace 记录正确 |
+| **D1 合计** | **30** | 30 passed |
+
+### 32.4 D1 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "QueryProcessor 的职责是什么？" | 关键词提取 + filters 解析，输出 ProcessedQuery |
+| "ProcessedQuery 有哪些字段？" | raw_query（Dense）、keywords（Sparse）、filters（HybridSearch） |
+| "为什么 keywords 和 raw_query 分开？" | keywords 用于 BM25 精确匹配，raw_query 用于语义向量检索 |
+| "分词策略是什么？" | 英文 3+ 字母词 + 中文 Bigram，与 SparseEncoder 对齐 |
+| "为什么查询端去重而文档端不去重？" | 查询只需词项集合，文档需要词频统计 |
+| "filters 是什么？" | metadata 过滤条件，如 {"doc_type": "pdf"}，当前阶段最小实现 |
+| "空查询怎么处理？" | Fail-Fast，抛 ValueError（入口必须保证数据有效性） |
+| "filters 非 dict 类型怎么处理？" | 容错降级为空 dict，记录 warning |
+| "Trace 怎么用？" | 可选参数，记录 raw_query/keywords_count/filters keys/duration_ms |
+| "为什么不用 jieba？" | 减少外部依赖 + Bigram 足够用于 BM25 关键词检索 |
+
 
 
 

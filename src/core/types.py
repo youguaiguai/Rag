@@ -295,3 +295,39 @@ def record_to_vector_record(record: ChunkRecord) -> Any:
         metadata=enriched_metadata,
     )
 
+
+# ============================================================
+# ProcessedQuery — 查询预处理结果（检索链路起点）
+# ============================================================
+
+@dataclass
+class ProcessedQuery:
+    """查询预处理结果 — QueryProcessor.process() 的输出
+
+    知识点：ProcessedQuery 在检索链路中的位置
+      1. 用户输入 query 字符串 + 可选 filters
+      2. QueryProcessor.process() → 关键词提取 + filters 解析 → ProcessedQuery
+      3. ProcessedQuery.keywords → SparseRetriever（BM25 关键词检索）
+      4. ProcessedQuery.raw_query → DenseRetriever（语义向量检索）
+      5. ProcessedQuery.filters → HybridSearch（metadata 过滤）
+
+    接口签名：ProcessedQuery(raw_query, keywords, filters)
+    字段说明：
+      - raw_query: 原始查询字符串（DenseRetriever 用于 embedding）
+      - keywords: 提取的关键词列表（SparseRetriever 用于 BM25 检索）
+      - filters: metadata 过滤条件（HybridSearch 用于向量库过滤）
+
+    契约约束：
+      - raw_query: 非空字符串
+      - keywords: list[str] 类型（可为空，但通常应非空）
+      - filters: dict 类型（即使无过滤条件也是空 dict）
+
+    面试考点：
+      "ProcessedQuery 为什么需要 keywords 和 raw_query 两个字段？"
+        → keywords 用于 BM25 稀疏检索（精确匹配），raw_query 用于 Dense 稠密检索（语义匹配）
+      "filters 是什么？" → metadata 过滤条件，如 {"doc_type": "pdf", "collection": "default"}
+    """
+    raw_query: str
+    keywords: list[str] = field(default_factory=list)
+    filters: dict[str, Any] = field(default_factory=dict)
+
