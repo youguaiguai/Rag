@@ -3274,6 +3274,72 @@ k1=1.2（词频饱和）, b=0.75（长度归一化）
 | "空文本怎么处理？" | SparseEncoder 输出 terms={}, doc_len=0，不抛异常 |
 | "IDF 为什么这样算？" | 词越稀有 IDF 越大越重要，IDF=ln((N-n+0.5)/(n+0.5)+1) |
 
+---
+
+## 26. C10：BatchProcessor（批处理编排）
+
+### 26.1 设计目标
+
+将 chunks 分 batch，逐批驱动 DenseEncoder + SparseEncoder 编码，合并结果。
+
+摄取链路位置：... → Transform 链 → **BatchProcessor** → Storage
+
+### 26.2 分批策略
+
+| 场景 | batch_size | chunks 数 | 批次数 | 批次大小 |
+|------|-----------|----------|--------|---------|
+| 验收标准 | 2 | 5 | 3 | [2, 2, 1] |
+| 整除 | 3 | 6 | 2 | [3, 3] |
+| 大 batch | 100 | 5 | 1 | [5] |
+
+**顺序稳定性**：按顺序切分，保持 chunk 顺序，跨批次连续合并。
+
+### 26.3 架构设计
+
+```
+chunks → _split_batches() → [[c0,c1], [c2,c3], [c4]]
+                                    ↓
+         逐批: DenseEncoder.encode(batch) → ChunkRecord[]
+               SparseEncoder.encode(batch) → SparseVector[]
+                                    ↓
+         合并: all_dense.extend(...) + all_sparse.extend(...)
+                                    ↓
+         trace 记录每批: {index, chunks, dense, sparse, duration_ms}
+```
+
+### 26.4 编码器组合
+
+| 模式 | Dense | Sparse | 输出 |
+|------|-------|--------|------|
+| 双编码 | ✅ | ✅ | (list[ChunkRecord], list[SparseVector]) |
+| 仅 Sparse | ❌ | ✅ | ([], list[SparseVector]) |
+
+Dense 编码器可选（注入 None 时跳过 Dense 编码），Sparse 编码器始终执行。
+
+### 26.5 C10 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 分批逻辑 | 3 | 5/bs=2→3批、整除无余、大batch单批 |
+| 基础 + 空输入 | 2 | 空列表返回空、空列表+trace |
+| 双编码驱动 | 3 | Dense+Sparse双编码、数量一致、多批收集 |
+| 仅 Sparse | 2 | 无Dense只Sparse、大批量 |
+| 顺序稳定性 | 2 | chunk_id按序、跨批连续 |
+| Trace + 属性 | 2 | trace批次详情、batch_size属性 |
+| **单元合计** | **14** | 14 passed |
+| 全量测试 | 664 | 664 passed, 5 skipped |
+
+### 26.6 C10 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "BatchProcessor 做了什么？" | 将 chunks 分 batch，逐批驱动 Dense+Sparse 编码，合并结果保持顺序 |
+| "为什么要分 batch？" | Embedding API 有批量大小限制 + 内存控制 + 错误隔离 |
+| "batch_size 怎么选？" | 看 API 限制（OpenAI 单次 2048）+ 网络条件 + 内存，推荐 100-500 |
+| "顺序怎么保证？" | 按顺序切分 + 按顺序合并（extend），跨批次连续 |
+| "Dense 编码器可选吗？" | 是的，注入 None 时跳过 Dense，只做 Sparse 编码 |
+| "每批耗时怎么记录？" | trace 的 batches 数组记录每批的 index/chunks/dense/sparse/duration_ms |
+
 
 
 

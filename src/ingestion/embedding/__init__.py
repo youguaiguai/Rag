@@ -4,6 +4,7 @@
 #   - SparseEncoder (C9)：Chunk.text → BM25 统计
 #   - BatchProcessor (C10)：分 batch 驱动编码
 
+from ingestion.embedding.batch_processor import BatchProcessor, BatchResult
 from ingestion.embedding.dense_encoder import DenseEncoder
 from ingestion.embedding.sparse_encoder import SparseEncoder, SparseVector
 
@@ -11,5 +12,7 @@ __all__ = [
     "DenseEncoder",
     "SparseEncoder",
     "SparseVector",
+    "BatchProcessor",
+    "BatchResult",
 ]
 
