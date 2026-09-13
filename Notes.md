@@ -3573,6 +3573,88 @@ CREATE INDEX idx_doc_hash ON image_index(doc_hash);
 | "幂等性怎么保证？" | INSERT OR REPLACE + 文件覆盖写入 |
 | "删除策略是什么？" | 先查索引获取路径→删文件→删索引，文件删除失败不阻塞索引删除 |
 
+---
+
+## 30. C14：Pipeline 编排（MVP 串起来）
+
+### 30.1 设计目标
+
+串行执行摄取链路：integrity → load → split → transform → encode → store，对失败步骤抛出明确异常。
+
+### 30.2 Pipeline 流程
+
+```
+file_path
+  ↓
+1. Integrity: FileIntegrityChecker.has_changed() → 未变更则跳过
+  ↓
+2. Load: LoaderFactory.create_for_file().load() → Document
+  ↓
+3. Split: DocumentChunker.split_document() → list[Chunk]
+  ↓
+4. Transform: ChunkRefiner → MetadataEnricher → ImageCaptioner → list[Chunk]
+  ↓
+5. Encode: BatchProcessor.process() → (list[ChunkRecord], list[SparseVector])
+  ↓
+6. Store: VectorUpserter.upsert() + BM25Indexer.upsert() → 持久化
+  ↓
+7. Update hash: FileIntegrityChecker.update_hash() → 增量摄取标记
+```
+
+### 30.3 异常策略
+
+| 阶段 | 失败策略 | 原因 |
+|------|---------|------|
+| Integrity | Fail-Fast（文件不存在→异常） | 无法处理不存在的文件 |
+| Load | Fail-Fast（解析失败→异常） | 无文本无法后续 |
+| Split | Fail-Fast（切分失败→异常） | 无 chunk 无法后续 |
+| Transform | Fail-Safe（降级继续） | 增强可选，不应阻塞 |
+| Encode | Fail-Fast（编码失败→异常） | 无向量无法存储 |
+| Store | Fail-Fast（存储失败→异常） | 数据丢失不可恢复 |
+
+### 30.4 Transform 链执行顺序
+
+1. **ChunkRefiner** → 去噪（干净文本有利于后续）
+2. **MetadataEnricher** → 补元数据（title/summary/tags）
+3. **ImageCaptioner** → 图片描述（最可能降级，放最后）
+
+### 30.5 核心接口
+
+| 方法 | 功能 |
+|------|------|
+| `ingest(file_path, force=False)` | 摄取单个文件 |
+| `ingest_batch(file_paths, force=False)` | 批量摄取（异常隔离） |
+| `on_progress(callback)` | 注册进度回调 |
+
+### 30.6 增量摄取
+
+- 首次摄取：`has_changed() → True` → 全量处理 → `update_hash()` → `save()`
+- 二次摄取：`has_changed() → False` → 跳过（status="skipped"）
+- force=True：跳过完整性检查，强制重新摄取
+
+### 30.7 C14 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 基础摄取流程 | 3 | Markdown摄取成功、结果结构、trace记录 |
+| 增量摄取 | 2 | 未变更跳过、force强制重摄 |
+| 进度回调 | 2 | 回调被调用、回调数据正确 |
+| 批量摄取 | 2 | 多文件批量、失败隔离 |
+| 错误处理 | 2 | 不存在文件抛异常、失败结果有错误信息 |
+| **集成合计** | **11** | 11 passed |
+| 全量测试 | 721 | 721 passed, 5 skipped |
+
+### 30.8 C14 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Pipeline 做了什么？" | 串行执行 integrity→load→split→transform→encode→store，串联摄取链路 |
+| "Transform 链为什么这个顺序？" | 去噪优先（干净文本）→ 元数据次之 → 图片最后（最可能降级） |
+| "增量摄取怎么实现？" | FileIntegrityChecker 对比 SHA256，未变更跳过，force=True 强制重摄 |
+| "批量摄取失败怎么处理？" | 异常隔离：单文件失败标记 status=failed，不影响其他文件 |
+| "进度回调怎么实现？" | on_progress 注册回调函数，每个阶段切换时触发（回调模式） |
+| "哪些阶段可以降级？" | 只有 Transform 链可以降级（Fail-Safe），其他阶段失败必须抛异常 |
+
 
 
 
