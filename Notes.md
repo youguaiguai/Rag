@@ -3489,6 +3489,90 @@ chunk_id = `hash(source_path + chunk_index + content_hash[:8])` — 确定性生
 | "内容变更后旧向量怎么办？" | 旧 chunk_id 不变但内容已变→新 chunk_id→旧记录需手动删除或 GC |
 | "delete_by_doc_id 怎么实现？" | 调用 VectorStore.delete_by_metadata({"doc_id": doc_id}) |
 
+---
+
+## 29. C13：ImageStorage（图片文件存储与索引映射）
+
+### 29.1 设计目标
+
+保存图片到 `data/images/{collection}/`，使用 SQLite 记录 image_id→path 映射。
+
+摄取链路位置：Loader 提取图片 → **ImageStorage** 保存文件 + 索引
+
+### 29.2 为什么用 SQLite 而非 JSON
+
+| 维度 | file_integrity (JSON) | image_storage (SQLite) |
+|------|----------------------|----------------------|
+| 数据量 | 小（文件数有限） | 大（每页多张图） |
+| 查询方式 | 全量遍历 | 索引查询（collection / doc_hash） |
+| 并发需求 | 单线程 | WAL 模式并发安全 |
+| 写入频率 | 低（每次摄取一次） | 高（批量保存图片） |
+
+### 29.3 数据库表结构
+
+```sql
+CREATE TABLE image_index (
+    image_id TEXT PRIMARY KEY,
+    file_path TEXT NOT NULL,
+    collection TEXT,
+    doc_hash TEXT,
+    page_num INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_collection ON image_index(collection);
+CREATE INDEX idx_doc_hash ON image_index(doc_hash);
+```
+
+### 29.4 文件存储 + 索引分离
+
+| 存储 | 内容 | 位置 |
+|------|------|------|
+| 文件系统 | 图片二进制 | `data/images/{collection}/{image_id}.{ext}` |
+| SQLite | image_id→file_path 映射 + 元数据 | `data/db/image_index.db` |
+
+**为什么不存 BLOB？** 文件系统更适合大文件 + 可直接 serve + 不膨胀数据库。
+
+### 29.5 WAL 模式（Write-Ahead Logging）
+
+- 写入先写到 WAL 文件，异步合并到主数据库
+- 读写不互斥（并发安全）
+- 面试考点："为什么要 WAL？" → 并发安全 + 写入性能
+
+### 29.6 核心方法
+
+| 方法 | 功能 |
+|------|------|
+| `save(image_id, image_data, collection, doc_hash, page_num)` | 保存图片 + 写索引（幂等：INSERT OR REPLACE） |
+| `get_path(image_id)` | 查找文件路径 |
+| `get_by_collection(collection)` | 按 collection 批量查询 |
+| `get_by_doc_hash(doc_hash)` | 按文档哈希查询所有图片 |
+| `delete(image_id)` | 删除单张（文件 + 索引） |
+| `delete_by_doc_hash(doc_hash)` | 删除文档所有图片 |
+
+### 29.7 C13 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 保存 + 文件存在 | 4 | 文件创建、路径正确、幂等覆盖、扩展名 |
+| 查询路径 | 2 | 存在返回路径、不存在返回 None |
+| 按 collection 查询 | 2 | 批量查询、空 collection |
+| 按 doc_hash 查询 | 2 | 查询文档图片、不存在空列表 |
+| 删除 | 3 | 单个删除、不存在返回False、按doc_hash删除 |
+| 持久化 + 统计 | 3 | 跨实例持久化、总数统计、按collection统计 |
+| **单元合计** | **16** | 16 passed |
+| 全量测试 | 710 | 710 passed, 5 skipped |
+
+### 29.8 C13 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "ImageStorage 做了什么？" | 保存图片二进制到文件系统 + SQLite 记录 image_id→path 映射 |
+| "为什么用 SQLite 而非 JSON？" | 图片数量大 + 需要索引查询 + WAL 并发安全 |
+| "为什么不把图片存 SQLite BLOB？" | 文件系统更适合大文件 + 可直接 serve + 不膨胀数据库 |
+| "WAL 模式有什么好处？" | 读写不互斥（并发安全）+ 写入性能好 |
+| "幂等性怎么保证？" | INSERT OR REPLACE + 文件覆盖写入 |
+| "删除策略是什么？" | 先查索引获取路径→删文件→删索引，文件删除失败不阻塞索引删除 |
+
 
 
 
