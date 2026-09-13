@@ -3655,6 +3655,81 @@ file_path
 | "进度回调怎么实现？" | on_progress 注册回调函数，每个阶段切换时触发（回调模式） |
 | "哪些阶段可以降级？" | 只有 Transform 链可以降级（Fail-Safe），其他阶段失败必须抛异常 |
 
+---
+
+## 31. C15：脚本入口 ingest.py（离线可用）
+
+### 31.1 设计目标
+
+实现 `scripts/ingest.py` CLI 入口，支持 `--collection`、`--path`、`--force`，调用 IngestionPipeline 完成摄取。
+
+### 31.2 CLI 参数
+
+| 参数 | 缩写 | 说明 |
+|------|------|------|
+| `--path` | `-p` | 文件或目录路径（必填） |
+| `--force` | `-f` | 强制重新摄取（跳过增量检查） |
+| `--collection` | `-c` | 文档集合名称 |
+| `--config` | | 配置文件路径（默认 config/settings.yaml） |
+| `--verbose` | `-v` | 详细日志输出 |
+
+### 31.3 使用方式
+
+```bash
+# 摄取单个文件
+python scripts/ingest.py --path document.pdf
+
+# 摄取目录
+python scripts/ingest.py --path ./documents/
+
+# 强制重新摄取
+python scripts/ingest.py --path document.pdf --force
+
+# 指定 collection
+python scripts/ingest.py --path document.pdf --collection my_project
+```
+
+### 31.4 目录递归扫描
+
+```python
+SUPPORTED_EXTENSIONS = {".pdf", ".md", ".markdown", ".txt", ".docx"}
+
+def collect_files(path: str) -> list[str]:
+    # 文件 → [path]
+    # 目录 → 递归扫描所有支持的扩展名
+```
+
+### 31.5 退出码策略
+
+| 场景 | 退出码 |
+|------|--------|
+| 成功 | 0 |
+| 跳过（未变更） | 0 |
+| 全部失败（无成功无跳过） | 1 |
+| 路径不存在 | 1 |
+
+### 31.6 C15 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 基础 CLI 运行 | 2 | 单文件摄取成功、输出汇总 |
+| 增量摄取 | 2 | 未变更跳过、变更后重摄 |
+| force 强制重摄 | 1 | --force 强制重新摄取 |
+| 目录摄取 | 1 | 目录下多文件摄取 |
+| 错误处理 | 1 | 不存在路径→非零退出码 |
+| **E2E 合计** | **7** | 7 passed (subprocess 真实 CLI) |
+| 全量测试 | 728 | 728 passed, 5 skipped |
+
+### 31.7 C15 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "为什么需要 CLI 入口？" | 离线批量摄取，不需要启动 MCP Server |
+| "argparse vs click？" | argparse 标准库无依赖，click 更优雅但需额外安装 |
+| "增量摄取怎么实现？" | FileIntegrityChecker 对比 SHA256，未变更→status=skipped |
+| "跳过的文件算失败吗？" | 不算，退出码 0（只有全部失败才返回 1） |
+| "目录摄取怎么实现？" | 递归扫描支持扩展名（.pdf/.md/.txt/.docx），sorted 排序 |
+
 
 
 
