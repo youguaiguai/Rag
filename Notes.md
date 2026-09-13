@@ -3076,6 +3076,204 @@ chunk.text
 | "单个 chunk 异常怎么处理？" | 保留原文 + metadata 标记 refined_by="error"，不影响其他 chunk |
 | "prompt 文件不存在怎么办？" | 用内置默认 prompt 模板，组件仍可用（Fail-Safe） |
 
+---
+
+## 22. C6：MetadataEnricher（规则增强 + 可选 LLM 增强 + 降级）
+
+### 22.1 设计目标
+
+为每个 chunk 生成语义元数据（`title`/`summary`/`tags`），用于检索结果展示、过滤和聚类。
+
+| 模式 | title 来源 | summary 来源 | tags 来源 | 成本 |
+|------|-----------|-------------|----------|------|
+| 规则模式（兜底） | Markdown 标题/首行截断20字 | 前100字截断到句子边界 | CJK 2-6字 + EN 3+字母词频 TopN | 零成本 |
+| LLM 模式（核心） | LLM 语义理解生成 | LLM 50-100字摘要 | LLM 提取 3-5 关键词 | API 调用 |
+
+### 22.2 降级机制
+
+| 触发场景 | fallback 原因 | metadata 标记 |
+|---------|--------------|-------------|
+| LLM API 异常 | `llm_error` | `enriched_by="rule"` + `enrichment_fallback` |
+| LLM 返回空 | `llm_empty_response` | `enriched_by="rule"` + `enrichment_fallback` |
+| JSON 解析失败 | `llm_json_parse_error` | `enriched_by="rule"` + `enrichment_fallback` |
+| 单 chunk 处理异常 | `exception: <详情>` | `enriched_by="error"` + `enrichment_fallback` |
+
+LLM 响应容错：三级解析（直接 json.loads → 正则提取 JSON 块 → 提取代码块 JSON），都失败降级到规则结果。
+
+### 22.3 C6 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| BaseTransform 继承 | 2 | 子类验证、transform 签名 |
+| 规则模式 | 5 | 标题提取、句子边界截断、词频提取、三字段非空 |
+| 规则边界 | 3 | 空文本、短文本、max_tags 限制 |
+| LLM 模式 | 3 | 成功返回、tags 截断、缺少字段用规则补 |
+| LLM 响应解析 | 3 | 纯 JSON、带文字 JSON、无效 JSON |
+| 降级行为 | 3 | LLMError、空响应、非 JSON |
+| 配置开关 | 2 | use_llm=False/True |
+| 异常隔离 + prompt | 2 | 单 chunk 异常隔离、prompt 文件/fallback |
+| Trace + Settings | 2 | settings.yaml 加载、trace 阶段记录 |
+| **单元合计** | **26** | 26 passed |
+
+---
+
+## 23. C7：ImageCaptioner（Vision LLM 生成 caption + 降级不阻塞）
+
+### 23.1 设计目标
+
+当 Vision LLM 可用且 chunk 包含图片引用时，为图片生成文字描述（caption），写入 chunk metadata。
+图片不能直接 embed，先 captioning 转文本，再参与检索（多模态 RAG 核心链路）。
+
+### 23.2 降级矩阵
+
+| 条件 | 行为 | chunk 标记 |
+|------|------|-----------|
+| Vision LLM 禁用 | 跳过 | `has_unprocessed_images=True` |
+| 无 image_ids | 正常跳过 | `has_unprocessed_images=False` |
+| 图片数据缺失 | 跳过该图 | `has_unprocessed_images=True` |
+| LLM 调用失败 | 跳过该图 | `has_unprocessed_images=True` |
+| 成功 | 写入 caption | `has_unprocessed_images=False` |
+
+### 23.3 图片数据解析
+
+| 来源 | 字段 | 优先级 |
+|------|------|--------|
+| base64 内联 | `img["data"]` | 1（最高） |
+| 文件路径 | `img["path"]` | 2（读取后 base64 编码） |
+| 都没有 | — | 返回空 → 降级 |
+
+关键设计：部分成功也有效 — 多图场景中部分成功写入 caption，部分失败标记未处理。
+
+### 23.4 C7 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| BaseTransform 继承 + 基础 | 2 | 子类验证、空列表 |
+| 启用模式 | 4 | 生成 caption、上下文注入、多图、文件路径 |
+| 降级模式 | 4 | 禁用、LLMError、空响应、数据缺失 |
+| 无图片跳过 | 2 | 无图原样返回、空 image_ids |
+| 图片数据解析 | 3 | data 优先、路径不存在、metadata image_refs |
+| 异常隔离 | 2 | 单 chunk 异常隔离、非 list 抛异常 |
+| 配置 + prompt | 2 | settings.yaml 加载、prompt 文件/fallback |
+| Trace | 1 | trace 阶段记录 |
+| **单元合计** | **21** | 21 passed |
+
+---
+
+## 24. C8：DenseEncoder（稠密向量编码）
+
+### 24.1 设计目标
+
+将 Chunk 列表批量送入 BaseEmbedding，生成向量，组合成 ChunkRecord。
+
+摄取链路位置：Loader → Splitter → Transform 链 → **DenseEncoder** → VectorUpserter
+
+### 24.2 与 Transform 的区别
+
+| 维度 | Transform（C5-C7） | DenseEncoder（C8） |
+|------|-------------------|-------------------|
+| 职责 | 增强（去噪/元数据/图片描述） | 编码（文本→向量） |
+| 可选性 | 可选/可降级 | 必需 |
+| 失败策略 | 降级不阻塞（Fail-Safe） | 抛异常（Fail-Fast） |
+| 输出类型 | `list[Chunk]` | `list[ChunkRecord]` |
+
+### 24.3 校验机制
+
+| 校验 | 规则 | 失败行为 |
+|------|------|---------|
+| 数量一致 | `len(vectors) == len(chunks)` | 抛 `EmbeddingError` |
+| 维度一致 | `len(vec) == embedding.dimensions` | 抛 `EmbeddingError` |
+| 空输入 | `len(chunks) == 0` → 返回空列表 | 不调用 API |
+
+### 24.4 C8 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 基础 + 空输入 | 3 | 空列表返回空、空列表+trace、单 chunk |
+| 编码正确性 | 4 | 数量一致、维度一致、字段映射、批量调用一次 |
+| 批量处理 | 2 | 20 个大批量、文本按顺序提取 |
+| 属性 | 2 | dimensions、model_name |
+| 错误场景 | 2 | 数量不一致、维度不匹配 |
+| Trace + Settings | 2 | trace 阶段记录、工厂自动创建 |
+| **单元合计** | **15** | 15 passed |
+
+---
+
+## 25. C9：SparseEncoder（BM25 统计与输出契约）
+
+### 25.1 设计目标
+
+对 chunks 进行分词和词频统计，输出 `SparseVector` 结构，供后续 `bm25_indexer` 构建倒排索引。
+
+### 25.2 SparseVector 数据结构
+
+```python
+@dataclass
+class SparseVector:
+    chunk_id: str           # 对应的 chunk ID
+    doc_id: str             # 所属文档 ID
+    terms: dict[str, float] # {term: tf} 词频映射
+    doc_len: int            # 文档长度（token 数，BM25 长度归一化用）
+```
+
+### 25.3 分词策略（无外部分词器依赖）
+
+| 语言 | 策略 | 示例 |
+|------|------|------|
+| 英文 | 3+ 字母词提取，小写化，去停用词 | "Database Query" → ["database", "query"] |
+| 中文 | Bigram（2-gram） | "向量数据库" → ["向量", "量数", "数据", "据库"] |
+| 混合 | 英文词 + 中文 bigram 合并 | "RAG 系统" → ["rag", "系统"] |
+
+### 25.4 BM25 公式与语料库统计
+
+```
+Score(D, Q) = Σ IDF(qi) · (f(qi,D)·(k1+1)) / (f(qi,D)+k1·(1-b+b·|D|/avgdl))
+IDF(qi) = ln((N - n(qi) + 0.5) / (n(qi) + 0.5) + 1)
+k1=1.2（词频饱和）, b=0.75（长度归一化）
+```
+
+`compute_corpus_stats()` 输出：N（文档总数）、avgdl（平均文档长度）、df（文档频率）、idf（预计算 IDF）。
+`compute_bm25_score()` 静态方法供 sparse_retriever 使用。
+
+### 25.5 与 DenseEncoder 对比
+
+| 维度 | DenseEncoder (C8) | SparseEncoder (C9) |
+|------|-------------------|-------------------|
+| 输出 | `list[ChunkRecord]`（含 dense embedding） | `list[SparseVector]`（含 term 频率） |
+| 依赖 | Embedding API（外部） | 纯本地计算（无 API） |
+| 失败策略 | 抛异常（API 不可用） | 不会失败（本地计算） |
+| 用途 | 向量数据库 | BM25 倒排索引 |
+| 互补性 | 语义相似性（同义词） | 精确匹配（专有名词） |
+
+### 25.6 C9 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 基础 + 空输入 | 3 | 空列表返回空、单 chunk、数量一致 |
+| 分词正确性 | 4 | 英文分词、短词过滤、中文 bigram、混合文本 |
+| 词频统计 | 3 | 词频正确、doc_len=tokens 数、dict 结构 |
+| 空文本处理 | 2 | 空文本、纯空白文本 |
+| 语料库统计 | 3 | N/avgdl/df/idf、DF 统计、IDF 稀有性 |
+| BM25 分数 | 2 | 匹配正分、不匹配零分 |
+| Trace | 1 | 阶段数据记录 |
+| **单元合计** | **18** | 18 passed |
+| 全量测试 | 650 | 650 passed, 5 skipped |
+
+### 25.7 C6-C9 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "MetadataEnricher 做了什么？" | 为 chunk 生成 title/summary/tags：规则模式基于文本统计提取（兜底），LLM 模式语义理解生成（核心），失败降级 |
+| "LLM 输出不可靠怎么办？" | 三级容错解析：直接 json.loads → 正则提取 JSON 块 → 提取代码块 JSON，都失败降级到规则结果 |
+| "ImageCaptioner 降级策略？" | Vision LLM 不可用/数据缺失/调用失败 → 跳过，标记 has_unprocessed_images=True，不阻塞 pipeline |
+| "DenseEncoder 和 Transform 的区别？" | Transform 是可选增强（降级安全），Encoder 是必需编码（失败抛异常） |
+| "为什么批量 embed？" | 减少 API 调用次数 → 降成本 + 降延迟 + 减少网络开销 |
+| "Sparse 和 Dense 有什么区别？" | Dense 捕获语义相似性（向量），Sparse 捕获精确匹配（关键词），两者互补 |
+| "中文怎么分词？" | Bigram 2-gram，无 jieba 依赖，虽然不精确但足够 BM25 统计 |
+| "BM25 的 k1 和 b 是什么？" | k1 控制词频饱和（默认1.2），b 控制长度归一化（默认0.75） |
+| "空文本怎么处理？" | SparseEncoder 输出 terms={}, doc_len=0，不抛异常 |
+| "IDF 为什么这样算？" | 词越稀有 IDF 越大越重要，IDF=ln((N-n+0.5)/(n+0.5)+1) |
+
 
 
 

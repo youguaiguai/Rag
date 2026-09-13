@@ -5,8 +5,11 @@
 #   - BatchProcessor (C10)：分 batch 驱动编码
 
 from ingestion.embedding.dense_encoder import DenseEncoder
+from ingestion.embedding.sparse_encoder import SparseEncoder, SparseVector
 
 __all__ = [
     "DenseEncoder",
+    "SparseEncoder",
+    "SparseVector",
 ]
 
