@@ -3425,6 +3425,70 @@ Dense 编码器可选（注入 None 时跳过 Dense 编码），Sparse 编码器
 | "倒排索引查询为什么快？" | 只遍历包含 query term 的文档（O(Σ|postings|)），非全量扫描 |
 | "增量更新怎么实现？" | 从现有索引提取已有 SparseVector，合并新文档后重新 build |
 
+---
+
+## 28. C12：VectorUpserter（向量存储与幂等性保证）
+
+### 28.1 设计目标
+
+接收 DenseEncoder 的 `list[ChunkRecord]`，转换为 VectorRecord，调用 BaseVectorStore 幂等写入。
+
+摄取链路位置：... → DenseEncoder → **VectorUpserter** → 向量数据库
+为 D2 (DenseRetriever) 提供可查询的向量数据库。
+
+### 28.2 幂等性设计
+
+| 场景 | chunk_id | 行为 |
+|------|---------|------|
+| 同一内容重复 upsert | 不变 | 覆盖旧记录，不产生重复 |
+| 内容变更 | 变化 | 新 chunk_id → 新记录（旧记录需手动删除） |
+| 批量 upsert | 各自独立 | 每条记录独立 upsert |
+
+chunk_id = `hash(source_path + chunk_index + content_hash[:8])` — 确定性生成，相同输入相同 id。
+
+### 28.3 ChunkRecord → VectorRecord 转换
+
+| ChunkRecord 字段 | VectorRecord 字段 | 说明 |
+|-----------------|-----------------|------|
+| `chunk_id` | `id` | 字段重命名 |
+| `embedding` | `embedding` | 直接复制 |
+| `text` | `text` | 直接复制 |
+| `metadata` + `doc_id` + `source_ref` | `metadata` | doc_id 和 source_ref 合并到 metadata |
+
+使用 `record_to_vector_record()` 工具函数完成转换。
+
+### 28.4 核心方法
+
+| 方法 | 功能 | 场景 |
+|------|------|------|
+| `upsert(records)` | 批量写入向量数据库 | 摄取链路 |
+| `delete(chunk_ids)` | 按 chunk_id 删除 | 文档更新 |
+| `delete_by_doc_id(doc_id)` | 按 doc_id 删除文档所有向量 | 文档下架 |
+
+### 28.5 C12 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 基础 + 空输入 | 2 | 空列表返回0、单条写入 |
+| 幂等性 | 3 | 同一记录两次相同id、内容变更不同id、覆盖旧记录 |
+| 批量写入 | 2 | 批量保持顺序、数量一致 |
+| Record 转换 | 3 | id映射、doc_id合并metadata、source_ref合并metadata |
+| 删除 | 2 | 按 chunk_id 删除、按 doc_id 删除 |
+| Trace + 属性 | 2 | trace阶段记录、vector_store属性 |
+| **单元合计** | **14** | 14 passed |
+| 全量测试 | 694 | 694 passed, 5 skipped |
+
+### 28.6 C12 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "VectorUpserter 做了什么？" | 接收 ChunkRecord，转换为 VectorRecord，调用 BaseVectorStore 幂等写入 |
+| "upsert 和 insert 的区别？" | upsert 幂等，相同 id 覆盖不重复；insert 可能产生重复 |
+| "幂等性怎么保证？" | chunk_id 确定性生成（hash），相同内容→相同 id→覆盖旧记录 |
+| "为什么 doc_id 要合并到 metadata？" | 向量数据库只存 id/embedding/text/metadata，doc_id 作为 metadata 用于过滤和溯源 |
+| "内容变更后旧向量怎么办？" | 旧 chunk_id 不变但内容已变→新 chunk_id→旧记录需手动删除或 GC |
+| "delete_by_doc_id 怎么实现？" | 调用 VectorStore.delete_by_metadata({"doc_id": doc_id}) |
+
 
 
 
