@@ -346,6 +346,49 @@ class BM25Indexer:
         ranked = sorted(scores.items(), key=lambda x: (-x[1], x[0]))
         return ranked[:top_k]
 
+    def query(
+        self,
+        keywords: list[str],
+        top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """BM25 关键词查询 — 接受关键词列表，返回结构化结果
+
+        接口签名：query(keywords: list[str], top_k=10) -> list[dict]
+        入参：
+          - keywords: 关键词列表（如 QueryProcessor 提取的 keywords）
+          - top_k: 返回前 K 个结果
+        入参：
+          - keywords: 关键词列表（如 QueryProcessor 提取的 keywords）
+          - top_k: 返回前 K 个结果
+        出参：[{"chunk_id": str, "score": float}, ...] 按分数降序
+
+        知识点：query() vs search()
+          - search()：底层接口，接受 query_terms: dict[str, float]（TF 加权）
+          - query()：便捷接口，接受 keywords: list[str]（简单计数 TF）
+          - query() 内部调用 search()，自动统计词频
+
+        处理流程：
+          1. 将 keywords 统计词频 → query_terms: dict[str, float]
+          2. 调用 self.search(query_terms, top_k)
+          3. 转换 list[tuple] → list[dict]（结构化输出）
+        """
+        if not keywords:
+            return []
+
+        # 统计词频
+        query_terms: dict[str, float] = {}
+        for kw in keywords:
+            query_terms[kw] = query_terms.get(kw, 0) + 1.0
+
+        # 调用底层 search
+        results = self.search(query_terms, top_k)
+
+        # 转换为结构化输出
+        return [
+            {"chunk_id": chunk_id, "score": score}
+            for chunk_id, score in results
+        ]
+
     # --------------------------------------------------------
     # 持久化：save / load
     # --------------------------------------------------------

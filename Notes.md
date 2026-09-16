@@ -3911,6 +3911,101 @@ class RetrievalResult:
 | "Trace 记录了什么？" | query, top_k, result_count, embed/query duration_ms, embedding_model |
 | "为什么 embed 返回 list[list[float]]？" | 批量处理设计，查询只有一条文本，取 results[0] |
 
+---
+
+## 34. D3：SparseRetriever（BM25 关键词检索）
+
+### 34.1 设计目标
+
+实现 `sparse_retriever.py`：将关键词 → BM25 索引查询 → VectorStore 获取原文 → 返回 RetrievalResult 列表。
+
+- 关键词 → BM25 query → [{chunk_id, score}]
+- chunk_ids → VectorStore.get_by_ids → [{id, text, metadata}]
+- 合并 score 与 text/metadata → RetrievalResult
+
+### 34.2 架构设计
+
+```
+关键词 (keywords: list[str], top_k: int)
+    │
+    ▼
+SparseRetriever.retrieve()
+    ├── 1. 校验 keywords 非空（空 → 返回 []）
+    ├── 2. 空索引保护（BM25 未构建 → 返回 []）
+    ├── 3. bm25_indexer.query(keywords, top_k) → [{chunk_id, score}]
+    │       └── query() 内部：统计词频 → search() → 结构化输出
+    ├── 4. 提取 chunk_ids（跳过缺少 chunk_id 的异常条目）
+    ├── 5. vector_store.get_by_ids(chunk_ids) → [{id, text, metadata}]
+    ├── 6. 合并 score + text + metadata → RetrievalResult
+    │       └── 按 score 降序排序（get_by_ids 可能打乱顺序）
+    └── 7. 记录 trace（keywords_count, bm25_result_count, result_count, duration）
+    │
+    ▼
+list[RetrievalResult]
+    ├── chunk_id: BM25 匹配的 Chunk ID
+    ├── score: BM25 分数
+    ├── text: VectorStore 获取的原文
+    └── metadata: VectorStore 获取的元数据
+```
+
+#### BM25Indexer.query() 新增方法
+
+```python
+def query(self, keywords: list[str], top_k: int = 10) -> list[dict[str, Any]]:
+    """便捷接口：keywords → 统计词频 → search() → 结构化输出"""
+```
+
+- 与 `search()` 的区别：`search()` 接受 `dict[str, float]`（TF 加权），`query()` 接受 `list[str]`
+- 内部自动统计词频，调用 `search()`，转换输出格式
+
+#### 关键设计决策
+
+| 决策 | 选择 | 原因 |
+|------|------|------|
+| 空 keywords | 返回 [] | 不阻塞检索，HybridSearch 可降级 |
+| 空索引 | 返回 [] | BM25 未构建时不阻塞，HybridSearch 可降级到 Dense-only |
+| 异常条目 | 跳过 | BM25 返回缺少 chunk_id 的条目时容错 |
+| 结果排序 | 显式排序 | get_by_ids 可能打乱 BM25 已排序的顺序 |
+| metadata | dict() 拷贝 | 避免外部修改影响结果 |
+| 依赖注入 | bm25_indexer/vector_store 可选 | 测试隔离 + 生产环境工厂创建 |
+
+#### 为什么 Sparse 需要 VectorStore？
+
+- BM25 索引只存 `(chunk_id, score, tf, doc_length)`，不存原文
+- 检索结果需要展示原文给用户 → 必须回查 VectorStore
+- 面试考点："为什么 SparseRetriever 需要 VectorStore 参与？" → BM25 是索引引擎，不是存储引擎
+
+### 34.3 D3 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 基础检索流程 | 4 | 返回结果、BM25 调用、VectorStore 调用、分数保留 |
+| 字段映射与结果组装 | 4 | 所有字段组装、text 映射、metadata 拷贝、结果数量 |
+| 空输入保护 | 3 | 空 keywords、不调用 VectorStore、trace 记录 |
+| 空索引保护 | 2 | 未构建返回 []、不调用 VectorStore |
+| 依赖注入 | 2 | 注入实例被使用、只读属性 |
+| 异常处理 | 2 | VectorStore 失败透传、BM25 无结果不调用 VectorStore |
+| Trace 集成 | 2 | trace 记录正确、无 trace 不报错 |
+| 结果排序 | 2 | score 降序、相同 score 按 chunk_id 排序 |
+| 只读属性 | 1 | bm25_indexer/vector_store 属性可访问 |
+| 边界情况 | 2 | chunk_id 找不到、缺少 id 字段 |
+| BM25Indexer.query() | 2 | 词频统计正确、空 keywords 返回 [] |
+| **D3 合计** | **26** | 26 passed |
+
+### 34.4 D3 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "SparseRetriever 做了什么？" | keywords → BM25 query → get_by_ids → RetrievalResult |
+| "为什么 Sparse 需要 VectorStore？" | BM25 只存 (chunk_id, score)，原文在 VectorStore |
+| "query() 和 search() 的区别？" | query() 接受 List[str]，search() 接受 dict[str, float] |
+| "空 keywords 怎么处理？" | 返回 []，不阻塞检索 |
+| "空索引怎么处理？" | 返回 []，HybridSearch 可降级到 Dense-only |
+| "BM25 返回的 chunk_id 在 VectorStore 找不到？" | 跳过该记录 |
+| "结果怎么排序？" | 按 score 降序，相同 score 按 chunk_id 字典序 |
+| "异常策略？" | Fail-Fast（VectorStore 失败透传），但空输入/空索引不抛异常 |
+| "Trace 记录了什么？" | keywords_count, bm25_result_count, result_count, bm25/get_by_ids duration |
+
 
 
 
