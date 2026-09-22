@@ -3962,3 +3962,324 @@ class RetrievalResult:
 | "降级策略是什么？" | 单路失败 → 用另一路结果 |
 | "为什么需要后置 metadata 过滤？" | 不信任 VectorStore 过滤，兜底保证正确性 |
 | "两阶段检索架构？" | 粗排（HybridSearch）→ 精排（Reranker） |
+
+
+---
+
+## 36. D6：CoreReranker（Core 层编排 + fallback）
+
+### 36.1 设计目标
+
+实现 `core/query_engine/reranker.py`：接入 `libs.reranker` 后端，失败/超时回退 fusion 排名。
+
+- 类型转换：RetrievalResult ↔ RerankCandidate
+- 异常降级：后端失败 → 返回原始排序，标记 fallback=true
+- 禁用处理：Reranker 未启用 → 直接返回原始排序
+- Trace 集成：记录 fallback 状态
+
+### 36.2 架构设计
+
+```
+CoreReranker.rerank(query, candidates, trace)
+    ├── 1. 检查 Reranker 是否启用
+    │       └── 未启用 → 返回原始排序（fallback=True）
+    ├── 2. 检查候选是否为空
+    │       └── 空 → 返回空列表
+    ├── 3. RetrievalResult → RerankCandidate（chunk_id → id）
+    ├── 4. 调用后端 rerank()
+    │       ├── 成功 → 返回精排结果（fallback=False）
+    │       └── 异常 → 捕获，返回原始排序（fallback=True）
+    ├── 5. RerankCandidate → RetrievalResult（id → chunk_id）
+    └── 6. 记录 trace（status, fallback, backend）
+```
+
+#### Fallback 策略（面试考点）
+
+| 场景 | 处理 | fallback |
+|------|------|----------|
+| Reranker 未启用 | 返回原始排序 | True |
+| 后端抛出 RerankerError | 返回原始排序 | True |
+| 后端抛出通用 Exception | 返回原始排序 | True |
+| 后端成功 | 返回精排结果 | False |
+
+#### 关键设计决策
+
+| 决策 | 选择 | 原因 |
+|------|------|------|
+| 异常处理 | 捕获所有 Exception | 精排是锦上添花，失败不应阻塞 |
+| 类型转换 | chunk_id ↔ id | Core/++ 层命名约定不同 |
+| 后端注入 | 可选参数 | 测试隔离 |
+| Trace 标记 | fallback 字段 | 便于监控降级频率 |
+
+### 36.3 D6 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 正常重排流程 | 4 | 返回结果、调用后端、保留候选、更新 score |
+| Fallback 降级 | 4 | RerankError、通用异常、保留 score、不抛异常 |
+| 禁用 Reranker | 3 | 返回原始、不调用后端、NoneReranker |
+| 类型转换 | 3 | chunk_id↔id、metadata 保留 |
+| 边界情况 | 2 | 空候选、单候选 |
+| Trace 集成 | 2 | success/fallback 标记 |
+| **D6 合计** | **18** | 18 passed |
+
+### 36.4 D6 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Core 层 Reranker 做什么？" | 编排 libs 后端 + 异常降级 + trace 集成 |
+| "为什么不直接用 libs Reranker？" | 需要类型转换（RetrievalResult ↔ RerankCandidate）+ fallback 处理 |
+| "fallback 策略是什么？" | 后端异常 → 返回原始排序，标记 fallback=true |
+| "什么时候 fallback？" | Reranker 未启用 / 后端异常 / 后端超时 |
+| "fallback 时 score 怎么处理？" | 保留原始 fusion 分数（不修改） |
+| "类型转换做了什么？" | RetrievalResult.chunk_id ↔ RerankCandidate.id |
+| "为什么 CoreReranker 要标记 fallback？" | 便于监控降级频率，判断是否需要修复后端 |
+
+
+
+---
+
+## 37. D7：scripts/query.py（CLI 查询入口）
+
+### 37.1 设计目标
+
+实现在线查询命令行工具，调用完整的 HybridSearch + Reranker 流程并格式化输出检索结果。
+
+- 开发调试用 CLI 工具（生产环境通过 MCP Server 暴露接口）
+- 支持 verbose 模式显示各阶段中间结果（便于调试）
+
+### 37.2 功能设计
+
+```
+python scripts/query.py --query "如何配置 Azure？" [OPTIONS]
+
+参数：
+  --query/-q      查询文本（必填）
+  --top-k/-k      返回结果数量（默认 10）
+  --collection/-c 限定检索集合（可选）
+  --verbose/-v    显示各阶段中间结果
+  --no-rerank     跳过 Reranker 阶段
+  --config        配置文件路径
+
+内部流程：
+  1. 加载配置 Settings
+  2. 初始化组件（QueryProcessor、DenseRetriever、SparseRetriever、Fusion、CoreReranker）
+  3. 组装 HybridSearch
+  4. 创建 TraceContext
+  5. 调用 HybridSearch.search() 获取候选
+  6. 调用 CoreReranker.rerank() 精排（除非 --no-rerank）
+  7. 格式化输出结果
+```
+
+### 37.3 输出格式
+
+```
+============================================================
+最终检索结果 (3 条)
+============================================================
+  [1] score=0.0325
+      文本: Azure 是一种云计算平台，提供...
+      来源: docs/azure_guide.md
+  [2] score=0.0287
+      文本: 配置 Azure 需要以下步骤...
+      来源: docs/config.md
+
+  ⏱️ 检索耗时: 45.2ms | 精排耗时: 12.3ms | 总耗时: 57.5ms
+```
+
+### 37.4 D7 测试覆盖
+
+| 测试类别 | 说明 |
+|---------|------|
+| 手动测试 | 依赖已摄取数据，运行 `python scripts/query.py --query "测试" --verbose` |
+| 全量单元测试 | 849 passed, 5 skipped（无新增自动化测试） |
+
+### 37.5 D7 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "query.py 和 MCP Tool 的区别？" | query.py 是开发调试 CLI，MCP Tool 是生产接口 |
+| "为什么需要 CLI 入口？" | 快速验证检索流程，不需要启动 MCP Server |
+| "verbose 模式有什么用？" | 显示各阶段中间结果（Dense/Sparse/Fusion/Rerank），便于调试 |
+| "--no-rerank 什么时候用？" | 调试 Fusion 阶段结果，或 Reranker 后端不可用时 |
+| "无数据时怎么提示？" | 友好提示"未找到相关文档，请先运行 ingest.py 摄取数据" |
+
+---
+
+## 38. Ingestion Pipeline — 入库流水线全解析
+
+### 38.1 Pipeline 是什么
+
+`IngestionPipeline`（`src/ingestion/pipeline.py`）是所有入库组件的**总指挥**。它不实现任何具体逻辑，只负责**编排和调度**——把 `FileIntegrityChecker`、`LoaderFactory`、`DocumentChunker`、`Transform 链`、`BatchProcessor`、`VectorUpserter`、`BM25Indexer` 按顺序串起来，让一个文件从路径变成可检索的向量数据。
+
+### 38.2 Pipeline 完整流程
+
+```
+file_path (PDF/MD/TXT 文件路径)
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  IngestionPipeline.ingest()                      │
+│                                                                 │
+│  ① FileIntegrityChecker.has_changed(path)                       │
+│     文件没变？→ 直接跳过返回 "skipped"                            │
+│                 │                                               │
+│                 ▼                                               │
+│  ② LoaderFactory → loader.load(path)                           │
+│     输出: Document (原始文本 + 元数据)                            │
+│                 │                                               │
+│                 ▼                                               │
+│  ③ DocumentChunker.split_document(document)                    │
+│     输出: list[Chunk] (文本片段 + chunk_id + 继承元数据)          │
+│                 │                                               │
+│                 ▼                                               │
+│  ④ Transform 链（逐项处理）                                     │
+│     ChunkRefiner.transform(chunks)        → 文本清洗             │
+│     MetadataEnricher.transform(chunks)    → 补充标题/摘要        │
+│     ImageCaptioner.transform(chunks)      → 图片描述生成         │
+│     输出: list[Chunk] (增强后的 chunks)                          │
+│                 │                                               │
+│                 ▼                                               │
+│  ⑤ BatchProcessor.process(chunks)                              │
+│     分出稠密向量 + 稀疏向量                                       │
+│     输出: (list[ChunkRecord], list[SparseVector])                │
+│                 │                                               │
+│                 ▼                                               │
+│  ⑥ 存储（两条分支）                                              │
+│     VectorUpserter.upsert(records)        → ChromaDB             │
+│     BM25Indexer.upsert(vectors)           → bm25_index.json      │
+│                 │                                               │
+│                 ▼                                               │
+│  ⑦ FileIntegrityChecker.update_hash(path) → 更新文件哈希         │
+│                 │                                               │
+│                 ▼                                               │
+│     返回 IngestionResult (状态/数量/耗时)                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 38.3 各阶段组件映射
+
+| Pipeline 阶段 | 调用的组件 | 源文件 |
+|--------------|-----------|--------|
+| ① 完整性检查 | `FileIntegrityChecker` | `libs/loader/file_integrity.py` |
+| ② 加载文件 | `LoaderFactory → PdfLoader/MarkdownLoader/TextLoader` | `libs/loader/loader_factory.py` |
+| ③ 文档切分 | `DocumentChunker` | `ingestion/chunking/document_chunker.py` |
+| ④ 文本增强 | `ChunkRefiner → MetadataEnricher → ImageCaptioner` | `ingestion/transform/` |
+| ⑤ 向量编码 | `BatchProcessor → DenseEncoder + SparseEncoder` | `ingestion/embedding/batch_processor.py` |
+| ⑥ 持久化存储 | `VectorUpserter + BM25Indexer` | `ingestion/storage/vector_upserter.py` + `ingestion/storage/bm25_indexer.py` |
+| ⑦ 更新哈希 | `FileIntegrityChecker.update_hash` | `libs/loader/file_integrity.py` |
+
+### 38.4 具体示例：摄取一个 PDF 文件
+
+```
+输入: "docs/rag_guide.pdf"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+① Integrity: 哈希是新文件 → 继续
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+② Load: PdfLoader → MarkItDown 转 Markdown → Document
+   输出: Document(
+     doc_id="a3f2b8c1",
+     text="# RAG 技术概述\n\n## 什么是RAG\n\nRAG是检索增强生成...",
+     metadata={"source_path": "docs/rag_guide.pdf", "title": "RAG 技术概述"}
+   )
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+③ Split: RecursiveSplitter 按 \n\n → \n → " " 递归切分
+   输出: 45 个 Chunk
+   - Chunk(chunk_id="a3f2b8c1_0000_7e9d", text="RAG 是检索增强生成...", index=0)
+   - Chunk(chunk_id="a3f2b8c1_0001_a2b3", text="向量数据库是...",     index=1)
+   - ...（共 45 个）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+④ Transform 链:
+   - ChunkRefiner:     去除多余空行、页眉页脚 → 45 个干净 Chunk
+   - MetadataEnricher: 补充 title="RAG 技术指南", tags=["RAG","检索","生成"]
+   - ImageCaptioner:   为 [IMAGE: img_001] 生成描述 "RAG 架构流程图"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⑤ Encode: BatchProcessor 分 batch=100（只有一批 45 个）
+   - Dense:  45 个 chunk → 45 个 1536 维向量 (调用 OpenAI API)
+   - Sparse: 45 个 chunk → 45 个词频统计 (本地 Bigram 分词)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⑥ Store:
+   - 45 个向量写入 ChromaDB (data/db/chroma/)
+   - 45 个稀疏向量写入 BM25 (data/db/bm25/bm25_index.json)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⑦ Hash: 保存 rag_guide.pdf 的 SHA256 到 file_hashes.json
+
+返回: IngestionResult(
+  file_path="docs/rag_guide.pdf",
+  status="success",
+  chunks=45,
+  dense_records=45,
+  sparse_vectors=45,
+  ms=3420.5
+)
+```
+
+### 38.5 ingest 方法核心代码
+
+```python
+def ingest(self, file_path: str, force: bool = False, trace=None) -> IngestionResult:
+    result = IngestionResult(file_path=file_path, status="success")
+
+    # 1. Integrity check
+    if not force and not self._integrity.has_changed(file_path):
+        result.status = "skipped"                    # 没变就跳过
+        return result
+
+    # 2. Load
+    document = self._load(file_path, trace)           # 读文件 → Document
+
+    # 3. Split
+    chunks = self._split(document, trace)             # Document → list[Chunk]
+
+    # 4. Transform chain
+    chunks = self._transform(chunks, trace)           # 清洗/补元数据/图片描述
+
+    # 5. Encode
+    dense_records, sparse_vectors = self._encode(chunks, trace)  # 稠密+稀疏编码
+
+    # 6. Store
+    self._store(dense_records, sparse_vectors, trace) # 写入 ChromaDB + BM25
+
+    # 7. Update hash
+    self._integrity.update_hash(file_path)            # 更新文件哈希记录
+    self._integrity.save()
+
+    return result
+```
+
+### 38.6 关键设计点
+
+| 设计点 | 说明 |
+|--------|------|
+| **Fail-Fast** | 配置错误、文件不存在、编码失败 → 直接抛异常 |
+| **Fail-Safe** | Transform 阶段内部失败 → 降级跳过，不阻塞流程 |
+| **幂等性** | 相同文件重复入库 → chunk_id 相同 → upsert 覆盖，不产生重复 |
+| **增量摄取** | 文件未变更 → 跳过（通过 SHA256 哈希判断） |
+| **批量入口** | `ingest_batch()` 遍历文件列表，单文件失败不影响其他文件 |
+| **进度回调** | `on_progress` 注册回调，Dashboard 可据此展示进度条 |
+| **Trace 追踪** | 每个阶段记录耗时和数据量，便于性能分析 |
+
+### 38.7 数据流转总结
+
+```
+文件路径
+  │
+  ▼
+Document（原始文本 + 元数据）         ← Loader
+  │
+  ▼
+list[Chunk]（文本片段 + chunk_id）    ← Splitter
+  │
+  ▼
+list[Chunk]（增强后）                 ← Transform 链
+  │
+  ├──→ list[ChunkRecord]（文本 + 稠密向量）  ← DenseEncoder → ChromaDB
+  │
+  └──→ list[SparseVector]（词频统计）        ← SparseEncoder → BM25
+
