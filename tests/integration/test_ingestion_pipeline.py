@@ -169,7 +169,7 @@ class TestBasicIngestion:
         stage_names = [s.stage for s in all_stages]
         assert any("load" in s for s in stage_names)
         assert any("split" in s for s in stage_names)
-        assert any("encode" in s for s in stage_names)
+        assert "embed" in stage_names or any("encode" in s for s in stage_names)
 
 
 # ============================================================
@@ -311,4 +311,68 @@ class TestErrorHandling:
         results = pipeline.ingest_batch(["/nonexistent/file.md"])
         assert results[0].status == "failed"
         assert results[0].error  # 非空错误信息
+
+
+# ============================================================
+# F4 Ingestion Tracing — Ingestion 链路打点测试
+# ============================================================
+
+class TestIngestionTracingF4:
+    """F4 Ingestion 链路打点测试（5 个测试）"""
+
+    def _run_pipeline_with_trace(self, tmp_path: Path) -> tuple:
+        """辅助：运行 pipeline 并返回 trace"""
+        pipeline = _make_pipeline(tmp_path)
+        file_path = _make_markdown_file(tmp_path)
+        trace = TraceContext(trace_type="ingestion")
+        pipeline.ingest(file_path, trace=trace)
+        return trace
+
+    def test_trace_contains_load_stage(self, tmp_path: Path) -> None:
+        """trace 包含 load 阶段"""
+        trace = self._run_pipeline_with_trace(tmp_path)
+        stages = trace.get_stages("load")
+        assert len(stages) == 1
+        assert stages[0].data["method"] is not None
+        assert stages[0].duration_ms is not None
+
+    def test_trace_contains_all_stages(self, tmp_path: Path) -> None:
+        """trace 包含所有摄取阶段"""
+        trace = self._run_pipeline_with_trace(tmp_path)
+        stage_names = {s.stage for s in trace.stages}
+        assert "load" in stage_names
+        assert "split" in stage_names
+        assert "transform" in stage_names
+        assert "embed" in stage_names
+        assert "upsert" in stage_names
+
+    def test_trace_stages_have_method_and_elapsed(self, tmp_path: Path) -> None:
+        """各阶段记录 method 和 elapsed_ms"""
+        trace = self._run_pipeline_with_trace(tmp_path)
+        for stage_name in ["load", "split", "transform", "embed", "upsert"]:
+            stages = trace.get_stages(stage_name)
+            assert len(stages) == 1, f"Stage {stage_name} should have 1 record"
+            assert stages[0].data.get("method") is not None
+            assert stages[0].duration_ms is not None
+            assert stages[0].duration_ms >= 0
+
+    def test_trace_to_dict_has_ingestion_type(self, tmp_path: Path) -> None:
+        """to_dict() 输出 trace_type == ingestion"""
+        trace = self._run_pipeline_with_trace(tmp_path)
+        trace.finish()
+        d = trace.to_dict()
+        assert d["trace_type"] == "ingestion"
+        assert "started_at" in d
+        assert "finished_at" in d
+        assert "total_elapsed_ms" in d
+        assert len(d["stages"]) >= 5
+
+    def test_trace_records_correct_method_names(self, tmp_path: Path) -> None:
+        """各阶段 method 字段使用正确名称"""
+        trace = self._run_pipeline_with_trace(tmp_path)
+        load_stages = trace.get_stages("load")
+        assert "method" in load_stages[0].data
+        # method 应该是 Loader 类名（包含 "Loader" 或具体类型）
+        method = load_stages[0].data["method"]
+        assert "Loader" in method or "loader" in method.lower() or "MarkItDown" in method
 

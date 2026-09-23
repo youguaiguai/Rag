@@ -4616,3 +4616,33 @@ MCPServer.run() → None
 |------|------|
 | "Query 链路 trace 应包含哪些阶段？" | query_processing, dense_retrieval, sparse_retrieval, fusion, rerank |
 | "每个阶段记录什么字段？" | method（提供方）、details（计数/状态）、elapsed_ms（耗时） |
+
+
+---
+
+## 47. F4：Ingestion 链路打点
+
+### 47.1 设计目标
+
+在 IngestionPipeline 中注入 TraceContext（trace_type="ingestion"），记录 load/split/transform/embed/upsert 各阶段。
+
+### 47.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/ingestion/pipeline.py` | 增强 | 重命名阶段 + 添加 method 字段 + 添加 transform 阶段 |
+| `tests/integration/test_ingestion_pipeline.py` | 追加 | 5 个 F4 打点测试 |
+
+### 47.3 F4 测试覆盖
+
+| 测试类别 | 数量 |
+|---------|------|
+| Ingestion Tracing | 5 |
+| **F4 合计** | **5 passed** |
+
+### 47.4 F4 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Ingestion 链路 trace 应包含哪些阶段？" | load, split, transform, embed, upsert |
+| "每个阶段记录什么字段？" | method（如 MarkItDown/DocumentChunker）、details、elapsed_ms |

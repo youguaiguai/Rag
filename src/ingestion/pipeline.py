@@ -288,7 +288,8 @@ class IngestionPipeline:
         document = loader.load(file_path)
 
         if trace:
-            trace.record_stage("pipeline.load", {
+            trace.record_stage("load", {
+                "method": type(loader).__name__,
                 "file_path": file_path,
                 "doc_id": document.doc_id,
                 "text_length": len(document.text),
@@ -304,7 +305,8 @@ class IngestionPipeline:
         chunks = self._chunker.split_document(document)
 
         if trace:
-            trace.record_stage("pipeline.split", {
+            trace.record_stage("split", {
+                "method": type(self._chunker).__name__,
                 "doc_id": document.doc_id,
                 "chunks": len(chunks),
             }, duration_ms=round((time.monotonic() - start) * 1000, 2))
@@ -320,6 +322,9 @@ class IngestionPipeline:
           3. ImageCaptioner: 最后处理图片 → 需要 Vision LLM
           - 面试考点："为什么这个顺序？" → 去噪优先 + 元数据次之 + 图片最后（最可能降级）
         """
+        import time
+        start = time.monotonic()
+
         # 4a. ChunkRefiner
         chunks = self._chunk_refiner.transform(chunks, trace=trace)
 
@@ -328,6 +333,15 @@ class IngestionPipeline:
 
         # 4c. ImageCaptioner
         chunks = self._image_captioner.transform(chunks, trace=trace)
+
+        if trace:
+            trace.record_stage("transform", {
+                "method": "TransformChain",
+                "refiner": type(self._chunk_refiner).__name__,
+                "enricher": type(self._metadata_enricher).__name__,
+                "captioner": type(self._image_captioner).__name__,
+                "chunks": len(chunks),
+            }, duration_ms=round((time.monotonic() - start) * 1000, 2))
 
         return chunks
 
@@ -343,7 +357,8 @@ class IngestionPipeline:
         dense_records, sparse_vectors = self._batch_processor.process(chunks, trace=trace)
 
         if trace:
-            trace.record_stage("pipeline.encode", {
+            trace.record_stage("embed", {
+                "method": type(self._batch_processor).__name__,
                 "chunks": len(chunks),
                 "dense": len(dense_records),
                 "sparse": len(sparse_vectors),
@@ -366,20 +381,15 @@ class IngestionPipeline:
         """
         import time
 
-        # 6a. Dense → 向量数据库
+        # 6. Store: Dense + Sparse
         start = time.monotonic()
         dense_count = self._vector_upserter.upsert(dense_records, trace=trace)
-        if trace:
-            trace.record_stage("pipeline.store_dense", {
-                "count": dense_count,
-            }, duration_ms=round((time.monotonic() - start) * 1000, 2))
-
-        # 6b. Sparse → BM25 索引
-        start = time.monotonic()
         self._bm25_indexer.upsert(sparse_vectors, trace=trace)
         if trace:
-            trace.record_stage("pipeline.store_sparse", {
-                "count": len(sparse_vectors),
+            trace.record_stage("upsert", {
+                "method": type(self._vector_upserter).__name__,
+                "dense_count": dense_count,
+                "sparse_count": len(sparse_vectors),
             }, duration_ms=round((time.monotonic() - start) * 1000, 2))
 
     # --------------------------------------------------------
