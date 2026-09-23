@@ -4791,3 +4791,33 @@ python scripts/start_dashboard.py
 | "Data Browser 作用？" | 验证摄取质量 + 调试召回结果 |
 | "为什么用 Service 层？" | 解耦 UI 和数据存储 |
 | "@st.cache_resource 作用？" | 缓存资源型对象，避免重复创建连接 |
+
+
+---
+
+## 52. G4：Ingestion 管理页面
+
+### 52.1 设计目标
+
+实现 Dashboard Ingestion 管理页面（文件上传触发摄取、进度展示、文档管理）。
+
+### 52.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/observability/dashboard/pages/ingestion_manager.py` | 实现 | Ingestion Manager 页面 |
+
+### 52.3 Ingestion Manager 功能
+
+| 功能 | 说明 |
+|------|------|
+| 文件上传 | st.file_uploader 支持多文件 |
+| 实时进度 | st.progress() + on_progress 回调 (F5) |
+| 文档管理 | 列出已摄取文档 + 删除按钮 |
+
+### 52.4 G4 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "如何实现实时进度？" | st.progress() 更新进度条 + on_progress 回调报告阶段 |
+| "为什么用临时文件？" | st.file_uploader 返回内存对象，需落盘才能被 Loader 读取 |
