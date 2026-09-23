@@ -28,9 +28,8 @@ from __future__ import annotations
 import json
 import logging
 import sys
-from typing import Any
-
 from mcp_server.protocol_handler import ProtocolHandler
+from typing import Any
 
 logger = logging.getLogger(__name__)
 

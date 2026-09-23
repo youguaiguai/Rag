@@ -18,11 +18,10 @@ from __future__ import annotations
 
 import json
 import os
+import pytest
 import subprocess
 import sys
 from pathlib import Path
-
-import pytest
 
 # ============================================================
 # 辅助变量
