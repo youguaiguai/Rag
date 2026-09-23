@@ -4357,3 +4357,40 @@ MCPServer.run() → None
 | "怎么测试 stdout 不被污染？" | 逐行验证 stdout 是有效的 JSON-RPC 消息 |
 | "如何实现 graceful shutdown？" | stdin EOF 时退出循环 |
 | "ProtocolHandler 和 MCPServer 的关系？" | Server 做 I/O，ProtocolHandler 做协议解析，解耦设计 |
+
+
+---
+
+## 39. E2：Protocol Handler 协议解析与能力协商
+
+### 39.1 设计目标
+
+实现 JSON-RPC 2.0 协议处理器，封装协议解析、方法路由、错误处理。
+（核心实现已在 E1 中完成，E2 补充独立单元测试）
+
+### 39.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `tests/unit/test_protocol_handler.py` | 创建 | 20 个 ProtocolHandler 单元测试 |
+
+### 39.3 E2 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| Initialize 处理 | 4 | protocolVersion、serverInfo、capabilities、空 params |
+| Tools/List 处理 | 4 | 空列表、返回 schema、多工具、必需字段 |
+| Tools/Call 路由 | 5 | 执行工具、返回结果、未知工具、缺名称、空参数 |
+| JSON-RPC 错误处理 | 5 | Parse Error、Invalid Request、Method not found、非对象 |
+| 通知消息 | 2 | 无响应、initialized 通知 |
+| **E2 合计** | **20** | 20 passed |
+
+### 39.4 E2 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "JSON-RPC 2.0 错误码？" | -32700 Parse Error、-32600 Invalid Request、-32601 Method not found、-32602 Invalid params、-32603 Internal error |
+| "为什么错误响应不泄露堆栈？" | 安全考虑，防止内部信息泄露给客户端 |
+| "通知消息怎么处理？" | 无 id 的请求是通知，不返回响应（返回 None） |
+| "能力协商在哪进行？" | initialize 响应中声明 capabilities.tools |
+| "ProtocolHandler 和 MCPServer 的关系？" | Server 做 I/O 循环，ProtocolHandler 做协议解析，解耦设计 |
