@@ -4821,3 +4821,35 @@ python scripts/start_dashboard.py
 |------|------|
 | "如何实现实时进度？" | st.progress() 更新进度条 + on_progress 回调报告阶段 |
 | "为什么用临时文件？" | st.file_uploader 返回内存对象，需落盘才能被 Loader 读取 |
+
+
+---
+
+## 53. G5：Ingestion 追踪页面
+
+### 53.1 设计目标
+
+实现 Dashboard Ingestion 追踪页面（摄取历史列表、阶段耗时瀑布图）。
+
+### 53.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/observability/dashboard/services/trace_service.py` | 实现 | TraceService — 解析 JSONL |
+| `src/observability/dashboard/pages/ingestion_traces.py` | 实现 | Ingestion Traces 页面 |
+
+### 53.3 Ingestion Traces 功能
+
+| 功能 | 说明 |
+|------|------|
+| 历史列表 | 按时间倒序展示 ingestion trace |
+| 耗时瀑布图 | 横向条形图展示各阶段耗时 |
+| 阶段详情 | 展示每个阶段的 method 和 data |
+
+### 53.4 G5 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "耗时瀑布图的作用？" | 定位摄取链路中的性能瓶颈 |
+| "TraceService 读取哪些文件？" | logs/traces_*.jsonl（按日期分文件） |
+| "如何区分 query/ingestion trace？" | trace_type 字段过滤 |
