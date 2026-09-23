@@ -4646,3 +4646,81 @@ MCPServer.run() → None
 |------|------|
 | "Ingestion 链路 trace 应包含哪些阶段？" | load, split, transform, embed, upsert |
 | "每个阶段记录什么字段？" | method（如 MarkItDown/DocumentChunker）、details、elapsed_ms |
+
+
+---
+
+## 48. F5：Pipeline 进度回调 (on_progress)
+
+### 48.1 设计目标
+
+在 IngestionPipeline.ingest() 中新增可选 on_progress 回调参数，支持外部实时获取处理进度。
+
+### 48.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/ingestion/pipeline.py` | 增强 | ingest() 添加 on_progress 参数 |
+| `tests/unit/test_pipeline_progress.py` | 创建 | 6 个测试 |
+
+### 48.3 F5 测试覆盖
+
+| 测试类别 | 数量 |
+|---------|------|
+| 回调调用验证 | 4 |
+| None 回调安全 | 1 |
+| 回调异常隔离 | 1 |
+| **F5 合计** | **6 passed** |
+
+### 48.4 F5 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "on_progress 回调签名？" | (stage_name: str, current: int, total: int) |
+| "on_progress=None 时行为？" | 完全不影响现有行为 |
+| "回调异常怎么处理？" | 捕获并记录 warning，不影响 pipeline 执行 |
+
+
+---
+
+## 49. G1：Dashboard 基础架构与系统总览页
+
+### 49.1 设计目标
+
+搭建 Streamlit 多页面应用框架，实现系统总览页面（展示组件配置与数据统计）。
+
+### 49.2 修改/创建文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/observability/dashboard/app.py` | 重写 | 多页面导航架构 |
+| `src/observability/dashboard/pages/overview.py` | 实现 | 系统总览页面 |
+| `src/observability/dashboard/services/config_service.py` | 实现 | 配置读取服务 |
+| `scripts/start_dashboard.py` | 创建 | Dashboard 启动脚本 |
+| 其他 pages | 创建占位 | query_traces, ingestion_traces 等 |
+
+### 49.3 Dashboard 六页面
+
+| 页面 | 功能 |
+|------|------|
+| Overview | 组件配置卡片 + 数据资产统计 |
+| Query Traces | 查询链路追踪 |
+| Ingestion Traces | 摄取链路追踪 |
+| Data Browser | 数据浏览与管理 |
+| IngestionManager | 摄取管理 |
+| Evaluation | RAG 评估面板 |
+
+### 49.4 启动命令
+
+```bash
+python scripts/start_dashboard.py
+# → http://localhost:8501
+```
+
+### 49.5 G1 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Dashboard 作用？" | 运维监控 + 调试 + 数据分析 |
+| "为什么单独启动脚本？" | 封装 streamlit 参数 + 环境检查 |
+| "Overview 展示什么？" | 组件配置卡片（Embedding/VectorStore/Reranker）+ 数据统计 |
