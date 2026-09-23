@@ -136,15 +136,21 @@ class HybridSearch:
         start = time.perf_counter()
 
         # 1. 查询预处理（带降级）
+        stage_start = time.perf_counter()
         try:
             processed = self._query_processor.process(query, filters=filters, trace=trace)
         except ValueError:
-            # query 为空 — 直接返回空结果
             logger.warning("HybridSearch: 查询为空，返回空结果")
             return []
 
         raw_query = processed.raw_query
         keywords = processed.keywords
+        if trace is not None:
+            trace.record_stage(
+                "query_processing",
+                {"method": "QueryProcessor", "keywords": keywords},
+                duration_ms=round((time.perf_counter() - stage_start) * 1000, 2),
+            )
 
         # 检索用的 top_k（比最终 top_k 大，留余量给融合去重和过滤）
         retrieval_top_k = self._settings.retrieval.top_k_dense
@@ -154,6 +160,9 @@ class HybridSearch:
         sparse_results: list[Any] = []
         dense_error: Exception | None = None
         sparse_error: Exception | None = None
+
+        dense_start = time.perf_counter()
+        sparse_start = time.perf_counter()
 
         def _run_dense() -> list[Any]:
             return self._dense_retriever.retrieve(
@@ -185,9 +194,20 @@ class HybridSearch:
                 sparse_error = e
                 logger.warning("Sparse 检索失败（降级到 Dense）: %s", e)
 
+        if trace is not None:
+            trace.record_stage(
+                "dense_retrieval",
+                {"method": "DenseRetriever", "result_count": len(dense_results), "error": str(dense_error) if dense_error else None},
+                duration_ms=round((time.perf_counter() - dense_start) * 1000, 2),
+            )
+            trace.record_stage(
+                "sparse_retrieval",
+                {"method": "SparseRetriever", "result_count": len(sparse_results), "error": str(sparse_error) if sparse_error else None},
+                duration_ms=round((time.perf_counter() - sparse_start) * 1000, 2),
+            )
+
         # 3. 降级处理
         if dense_error and sparse_error:
-            # 两者都失败 — 无法返回任何结果
             total_ms = (time.perf_counter() - start) * 1000
             if trace is not None:
                 trace.record_stage(
@@ -202,19 +222,24 @@ class HybridSearch:
             )
 
         if dense_error and not sparse_error:
-            # Dense 失败 → 返回 Sparse 结果
             merged = sparse_results
             mode = "sparse_only"
         elif sparse_error and not dense_error:
-            # Sparse 失败 → 返回 Dense 结果
             merged = dense_results
             mode = "dense_only"
         else:
             # 两者都成功 → RRF Fusion 融合
+            fusion_start = time.perf_counter()
             merged = self._fusion.fuse(
                 [dense_results, sparse_results],
-                top_k=None,  # 不在融合阶段截断，留给后置 Top-K
+                top_k=None,
             )
+            if trace is not None:
+                trace.record_stage(
+                    "fusion",
+                    {"method": "RRF", "input_lists": 2, "result_count": len(merged)},
+                    duration_ms=round((time.perf_counter() - fusion_start) * 1000, 2),
+                )
             mode = "fused"
 
         # 4. Metadata 后置过滤
@@ -224,7 +249,7 @@ class HybridSearch:
         # 5. Top-K 截断
         final_results = merged[:top_k]
 
-        # 6. 记录 trace
+        # 6. 记录总 trace
         total_ms = (time.perf_counter() - start) * 1000
         if trace is not None:
             trace.record_stage(

@@ -4586,3 +4586,33 @@ MCPServer.run() → None
 | "JSON Lines 格式优势？" | 每行独立 JSON，支持 append 写入，grep/jq 友好 |
 | "为什么 trace 单独一个 logger？" | 关注点分离，trace 数据量大且格式固定 |
 | "write_trace 和 TraceCollector 的关系？" | write_trace 是底层 IO，TraceCollector 是高层抽象 |
+
+
+---
+
+## 46. F3：Query 链路打点
+
+### 46.1 设计目标
+
+在 HybridSearch 中注入详细 TraceContext 打点，记录 query_processing/dense_retrieval/sparse_retrieval/fusion 各阶段。
+
+### 46.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/core/query_engine/hybrid_search.py` | 增强 | 细分 trace 阶段 |
+| `tests/integration/test_hybrid_search.py` | 追加 | 5 个 F3 打点测试 |
+
+### 46.3 F3 测试覆盖
+
+| 测试类别 | 数量 |
+|---------|------|
+| Query Tracing | 5 |
+| **F3 合计** | **5 passed** |
+
+### 46.4 F3 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Query 链路 trace 应包含哪些阶段？" | query_processing, dense_retrieval, sparse_retrieval, fusion, rerank |
+| "每个阶段记录什么字段？" | method（提供方）、details（计数/状态）、elapsed_ms（耗时） |

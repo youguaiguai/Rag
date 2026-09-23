@@ -575,3 +575,96 @@ class TestTraceIntegration:
         stages = trace.get_stages("hybrid_search")
         assert stages[0].data["mode"] == "dense_only"
 
+
+# ============================================================
+# F3 Query Tracing — Query 链路打点测试
+# ============================================================
+
+class TestQueryTracingF3:
+    """F3 Query 链路打点测试（5 个测试）
+
+    知识点：Query 链路 trace 应包含各阶段
+      - query_processing: 查询预处理
+      - dense_retrieval: 稠密检索
+      - sparse_retrieval: 稀疏检索
+      - fusion: RRF 融合
+    """
+
+    def test_trace_contains_query_processing_stage(self) -> None:
+        """trace 包含 query_processing 阶段"""
+        hybrid, _, _, _ = _make_hybrid_search(
+            dense_results=[RetrievalResult(chunk_id="d1", score=0.9, text="t", metadata={})],
+            sparse_results=[RetrievalResult(chunk_id="s1", score=1.0, text="t", metadata={})],
+        )
+
+        trace = TraceContext(trace_type="query")
+        hybrid.search("test query", top_k=5, trace=trace)
+
+        stages = trace.get_stages("query_processing")
+        assert len(stages) == 1
+        assert stages[0].data["method"] == "QueryProcessor"
+
+    def test_trace_contains_dense_and_sparse_stages(self) -> None:
+        """trace 包含 dense_retrieval 和 sparse_retrieval 阶段"""
+        hybrid, _, _, _ = _make_hybrid_search(
+            dense_results=[RetrievalResult(chunk_id="d1", score=0.9, text="t", metadata={})],
+            sparse_results=[RetrievalResult(chunk_id="s1", score=1.0, text="t", metadata={})],
+        )
+
+        trace = TraceContext(trace_type="query")
+        hybrid.search("test query", top_k=5, trace=trace)
+
+        dense_stages = trace.get_stages("dense_retrieval")
+        sparse_stages = trace.get_stages("sparse_retrieval")
+        assert len(dense_stages) == 1
+        assert len(sparse_stages) == 1
+        assert dense_stages[0].data["method"] == "DenseRetriever"
+        assert sparse_stages[0].data["method"] == "SparseRetriever"
+
+    def test_trace_contains_fusion_stage(self) -> None:
+        """trace 包含 fusion 阶段"""
+        hybrid, _, _, _ = _make_hybrid_search(
+            dense_results=[RetrievalResult(chunk_id="d1", score=0.9, text="t", metadata={})],
+            sparse_results=[RetrievalResult(chunk_id="s1", score=1.0, text="t", metadata={})],
+        )
+
+        trace = TraceContext(trace_type="query")
+        hybrid.search("test query", top_k=5, trace=trace)
+
+        fusion_stages = trace.get_stages("fusion")
+        assert len(fusion_stages) == 1
+        assert fusion_stages[0].data["method"] == "RRF"
+
+    def test_trace_stages_have_elapsed_ms(self) -> None:
+        """各阶段记录 duration_ms"""
+        hybrid, _, _, _ = _make_hybrid_search(
+            dense_results=[RetrievalResult(chunk_id="d1", score=0.9, text="t", metadata={})],
+            sparse_results=[RetrievalResult(chunk_id="s1", score=1.0, text="t", metadata={})],
+        )
+
+        trace = TraceContext(trace_type="query")
+        hybrid.search("test query", top_k=5, trace=trace)
+
+        for stage_name in ["query_processing", "dense_retrieval", "sparse_retrieval", "fusion"]:
+            stages = trace.get_stages(stage_name)
+            assert len(stages) == 1
+            assert stages[0].duration_ms is not None
+            assert stages[0].duration_ms >= 0
+
+    def test_trace_to_dict_has_correct_trace_type(self) -> None:
+        """to_dict() 输出 trace_type == query"""
+        hybrid, _, _, _ = _make_hybrid_search(
+            dense_results=[RetrievalResult(chunk_id="d1", score=0.9, text="t", metadata={})],
+            sparse_results=[RetrievalResult(chunk_id="s1", score=1.0, text="t", metadata={})],
+        )
+
+        trace = TraceContext(trace_type="query")
+        hybrid.search("test query", top_k=5, trace=trace)
+        trace.finish()
+
+        d = trace.to_dict()
+        assert d["trace_type"] == "query"
+        assert "started_at" in d
+        assert "finished_at" in d
+        assert "total_elapsed_ms" in d
+
