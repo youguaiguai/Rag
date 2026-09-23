@@ -4759,3 +4759,35 @@ python scripts/start_dashboard.py
 | "DocumentManager 的作用？" | 跨存储协调文档生命周期 |
 | "删除的一致性如何保证？" | 尽力而为 + 日志记录，非分布式事务 |
 | "为什么不用分布式事务？" | 本地存储无需 2PC，日志足够 |
+
+
+---
+
+## 51. G3：数据浏览器页面
+
+### 51.1 设计目标
+
+实现 Dashboard 数据浏览器页面（查看文档列表、Chunk 详情、图片预览）。
+
+### 51.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/observability/dashboard/services/data_service.py` | 实现 | DataService |
+| `src/observability/dashboard/pages/data_browser.py` | 实现 | 数据浏览器页面 |
+
+### 51.3 Data Browser 功能
+
+| 功能 | 说明 |
+|------|------|
+| 文档列表 | 展示 source_path、chunk 数、图片数 |
+| Chunk 详情 | 可折叠展示文本内容 + 元数据 |
+| 图片预览 | 显示 chunk 关联的图片 |
+
+### 51.4 G3 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Data Browser 作用？" | 验证摄取质量 + 调试召回结果 |
+| "为什么用 Service 层？" | 解耦 UI 和数据存储 |
+| "@st.cache_resource 作用？" | 缓存资源型对象，避免重复创建连接 |
