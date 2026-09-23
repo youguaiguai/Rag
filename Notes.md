@@ -4853,3 +4853,35 @@ python scripts/start_dashboard.py
 | "耗时瀑布图的作用？" | 定位摄取链路中的性能瓶颈 |
 | "TraceService 读取哪些文件？" | logs/traces_*.jsonl（按日期分文件） |
 | "如何区分 query/ingestion trace？" | trace_type 字段过滤 |
+
+
+---
+
+## 54. G6：Query 追踪页面
+
+### 54.1 设计目标
+
+实现 Dashboard Query 追踪页面（查询历史、Dense/Sparse 对比、阶段耗时）。
+
+### 54.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/observability/dashboard/pages/query_traces.py` | 实现 | Query Traces 页面 |
+
+### 54.3 Query Traces 功能
+
+| 功能 | 说明 |
+|------|------|
+| 搜索过滤 | 按 query 关键词搜索历史 |
+| 耗时瀑布图 | 各阶段耗时横向条形图 |
+| Dense/Sparse 对比 | 并排展示两种检索的结果数 |
+| 阶段详情 | 展示每个阶段的 method 和 data |
+
+### 54.4 G6 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "Query Traces 作用？" | 调试召回问题 + 性能分析 |
+| "数据来源？" | TraceService 读取 traces_*.jsonl（F3 打点） |
+| "如何区分 Dense/Sparse 效果？" | 并列对比 result_count |
