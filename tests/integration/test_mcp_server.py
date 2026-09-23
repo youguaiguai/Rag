@@ -383,3 +383,190 @@ class TestQueryKnowledgeHub:
         # collection 不在 required 列表中
         assert "collection" not in TOOL_SCHEMA["inputSchema"].get("required", [])
 
+
+# ============================================================
+# TestMultimodalImage — 多模态图像返回测试
+# ============================================================
+
+class TestMultimodalImage:
+    """多模态图像返回测试（直接测试 MultimodalAssembler）
+
+    知识点：MCP ImageContent 格式
+      - type: "image"
+      - data: base64 编码的图片数据
+      - mimeType: "image/png" / "image/jpeg" 等
+    """
+
+    def test_assemble_text_only(self) -> None:
+        """无图片时只返回文本"""
+        from core.response.multimodal_assembler import MultimodalAssembler
+        from core.types import RetrievalResult
+
+        assembler = MultimodalAssembler()
+        results = [
+            RetrievalResult(chunk_id="c1", score=0.9, text="text", metadata={}),
+        ]
+
+        content = assembler.assemble(results, "Hello world")
+
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert content[0]["text"] == "Hello world"
+
+    def test_assemble_with_image_refs(self) -> None:
+        """有 image_refs 时返回 text + image"""
+        import base64
+        import tempfile
+        from core.response.multimodal_assembler import MultimodalAssembler
+        from core.types import RetrievalResult
+
+        # 创建临时 PNG 图片（1x1 像素）
+        # PNG 文件头 + IHDR + IDAT + IEND
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            # 有效的 1x1 透明 PNG
+            png_data = base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+                "2mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg=="
+            )
+            f.write(png_data)
+            temp_path = f.name
+
+        try:
+            assembler = MultimodalAssembler()
+            results = [
+                RetrievalResult(
+                    chunk_id="c1",
+                    score=0.9,
+                    text="text",
+                    metadata={"image_refs": [temp_path]},
+                ),
+            ]
+
+            content = assembler.assemble(results, "Text with image")
+
+            assert len(content) == 2
+            assert content[0]["type"] == "text"
+            assert content[1]["type"] == "image"
+            assert content[1]["mimeType"] == "image/png"
+            # data 应该是 base64 字符串
+            assert isinstance(content[1]["data"], str)
+            # 验证 base64 可解码
+            decoded = base64.b64decode(content[1]["data"])
+            assert decoded == png_data
+
+        finally:
+            import os
+            os.unlink(temp_path)
+
+    def test_assemble_deduplicates_images(self) -> None:
+        """多个 chunk 引用同一张图时去重"""
+        import base64
+        import tempfile
+        import os
+        from core.response.multimodal_assembler import MultimodalAssembler
+        from core.types import RetrievalResult
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            png_data = base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4"
+                "2mP8z8BQDwADhQGAWjR9awAAAABJRU5ErkJggg=="
+            )
+            f.write(png_data)
+            temp_path = f.name
+
+        try:
+            assembler = MultimodalAssembler()
+            # 两个 chunk 引用同一张图
+            results = [
+                RetrievalResult(chunk_id="c1", score=0.9, text="t1", metadata={"image_refs": [temp_path]}),
+                RetrievalResult(chunk_id="c2", score=0.8, text="t2", metadata={"image_refs": [temp_path]}),
+            ]
+
+            content = assembler.assemble(results, "Text")
+
+            # 应该只有 1 张图片（去重）
+            image_items = [c for c in content if c["type"] == "image"]
+            assert len(image_items) == 1
+
+        finally:
+            os.unlink(temp_path)
+
+    def test_assemble_image_load_failure_isolated(self) -> None:
+        """单个图片加载失败不影响其他内容"""
+        from core.response.multimodal_assembler import MultimodalAssembler
+        from core.types import RetrievalResult
+
+        assembler = MultimodalAssembler()
+        results = [
+            RetrievalResult(
+                chunk_id="c1",
+                score=0.9,
+                text="text",
+                metadata={"image_refs": ["/nonexistent/image.png"]},
+            ),
+        ]
+
+        content = assembler.assemble(results, "Text")
+
+        # 文本仍在，图片被跳过
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+
+    def test_assemble_with_image_id_compat(self) -> None:
+        """兼容单个 image_id 格式"""
+        from core.response.multimodal_assembler import MultimodalAssembler
+        from core.types import RetrievalResult
+
+        assembler = MultimodalAssembler()
+        results = [
+            RetrievalResult(
+                chunk_id="c1",
+                score=0.9,
+                text="text",
+                metadata={"image_id": "some_image_id"},
+            ),
+        ]
+
+        # 不存在的 image_id 应该被跳过，不抛异常
+        content = assembler.assemble(results, "Text")
+        assert content[0]["type"] == "text"
+
+    def test_image_content_has_required_fields(self) -> None:
+        """ImageContent 包含必需字段: type, data, mimeType"""
+        import base64
+        import tempfile
+        import os
+        from core.response.multimodal_assembler import MultimodalAssembler
+        from core.types import RetrievalResult
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            # 最小的有效 JPEG
+            jpeg_data = base64.b64decode(
+                "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP////////////////////////////////"
+                "//////////////////////////////////////////2wBDAf////////////////////"
+                "//////////////////////////////////////////////////////wAARCAABAAED"
+                "AREAAHEBAXEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAA"
+                "AAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwD"
+                "AQACEQMRAD8AKp//2Q=="
+            )
+            f.write(jpeg_data)
+            temp_path = f.name
+
+        try:
+            assembler = MultimodalAssembler()
+            results = [
+                RetrievalResult(chunk_id="c1", score=0.9, text="t", metadata={"image_refs": [temp_path]}),
+            ]
+
+            content = assembler.assemble(results, "Text")
+            image = content[1]
+
+            assert "type" in image
+            assert "data" in image
+            assert "mimeType" in image
+            assert image["type"] == "image"
+            assert image["mimeType"].startswith("image/")
+
+        finally:
+            os.unlink(temp_path)
+

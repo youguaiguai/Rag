@@ -5,7 +5,8 @@ Response 模块 — MCP 响应构建
 """
 
 from core.response.citation_generator import CitationGenerator
+from core.response.multimodal_assembler import MultimodalAssembler
 from core.response.response_builder import ResponseBuilder
 
-__all__ = ["ResponseBuilder", "CitationGenerator"]
+__all__ = ["ResponseBuilder", "CitationGenerator", "MultimodalAssembler"]
 

@@ -4465,3 +4465,54 @@ MCPServer.run() → None
 | "list_collections 做了什么？" | 扫描 data/documents/ 子目录，返回集合名和文件数 |
 | "为什么不返回根目录文件？" | 只有子目录被视为集合，根目录文件不是有效集合 |
 | "目录不存在怎么办？" | 返回空列表（不抛异常），保证可用性 |
+
+## 42. E5：get_document_summary Tool
+
+### 42.1 设计目标
+实现 MCP Tool `get_document_summary`：按 doc_id 返回文档元数据（title/tags/source）。
+
+### 42.2 修改文件
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/mcp_server/tools/get_document_summary.py` | 实现 | get_document_summary Tool |
+| `tests/unit/test_get_document_summary.py` | 创建 | 10 个测试 |
+
+### 42.3 E5 测试覆盖
+| 测试类别 | 数量 |
+|---------|------|
+| Tool Schema | 2 |
+| 功能测试 | 8 |
+| **E5 合计** | **10 passed** |
+
+
+---
+
+## 43. E6：多模态返回组装
+
+### 43.1 设计目标
+
+实现 MultimodalAssembler：命中 chunk 含 image_refs 时读取图片并 base64 返回 ImageContent。
+
+### 43.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/core/response/multimodal_assembler.py` | 实现 | 多模态内容组装器 |
+| `src/core/response/__init__.py` | 更新 | 添加导出 |
+| `tests/integration/test_mcp_server.py` | 追加 | 6 个图像返回测试 |
+
+### 43.3 E6 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| 图像返回测试 | 6 | 纯文本、有图片、图片去重、失败隔离、兼容格式、必需字段 |
+| **E6 合计** | **6** | 6 passed |
+
+### 43.4 E6 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "MultimodalAssembler 做了什么？" | 从检索结果提取 image_refs → 加载图片 → base64 编码为 ImageContent |
+| "为什么图片用 Base64？" | MCP Stdio 模式无 HTTP 端点，Base64 自包含 |
+| "图片加载失败怎么处理？" | 失败隔离：跳过失败图片，不影响其他内容返回 |
+| "图片去重逻辑？" | 多个 chunk 引用同一张图时通过 dict.fromkeys 去重 |
