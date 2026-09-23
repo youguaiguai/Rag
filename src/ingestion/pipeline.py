@@ -153,28 +153,38 @@ class IngestionPipeline:
         file_path: str,
         force: bool = False,
         trace: TraceContext | None = None,
+        on_progress: Callable[[str, int, int], None] | None = None,
     ) -> IngestionResult:
         """摄取单个文件
 
-        接口签名：ingest(file_path: str, force: bool = False) -> IngestionResult
+        接口签名：ingest(file_path, force=False, trace=None, on_progress=None) -> IngestionResult
         入参：
           - file_path: 文件路径
-          - force: 是否强制重新摄取（跳过完整性检查）
+          - force: 是否强制重新摄取
           - trace: 可选追踪上下文
+          - on_progress: 可选进度回调 (stage_name, current, total)
         出参：IngestionResult
 
-        处理流程：
-          1. Integrity: 检查文件是否变更（force=True 时跳过）
-          2. Load: 加载文件 → Document
-          3. Split: 切分 Document → list[Chunk]
-          4. Transform: ChunkRefiner → MetadataEnricher → ImageCaptioner
-          5. Encode: BatchProcessor → (dense, sparse)
-          6. Store: VectorUpserter + BM25Indexer
-          7. 更新文件哈希
+        F5 on_progress 回调：
+          - stage_name: 当前阶段名称（load/split/transform/embed/upsert）
+          - current: 当前阶段索引（1-based）
+          - total: 总阶段数
+          - on_progress=None 时完全不影响现有行为
         """
         import time
+
         start_time = time.monotonic()
         result = IngestionResult(file_path=file_path, status="success")
+
+        # F5: 定义阶段列表（用于计算进度）
+        _stages = ["load", "split", "transform", "embed", "upsert"]
+        _total_stages = len(_stages)
+        def _report_progress(stage_name: str, idx: int) -> None:
+            if on_progress is not None:
+                try:
+                    on_progress(stage_name, idx, _total_stages)
+                except Exception as e:
+                    logger.warning("Pipeline: on_progress 回调异常: %s", e)
 
         try:
             # 1. Integrity check
@@ -186,23 +196,27 @@ class IngestionPipeline:
                 return result
 
             # 2. Load
+            _report_progress("load", 1)
             self._emit_progress("load", {"file_path": file_path})
             document = self._load(file_path, trace)
             result.doc_id = document.doc_id
             self._emit_progress("load_done", {"doc_id": document.doc_id, "text_length": len(document.text)})
 
             # 3. Split
+            _report_progress("split", 2)
             self._emit_progress("split", {"doc_id": document.doc_id})
             chunks = self._split(document, trace)
             result.chunks = len(chunks)
             self._emit_progress("split_done", {"chunks": len(chunks)})
 
             # 4. Transform chain
+            _report_progress("transform", 3)
             self._emit_progress("transform", {"chunks": len(chunks)})
             chunks = self._transform(chunks, trace)
             self._emit_progress("transform_done", {"chunks": len(chunks)})
 
             # 5. Encode
+            _report_progress("embed", 4)
             self._emit_progress("encode", {"chunks": len(chunks)})
             dense_records, sparse_vectors = self._encode(chunks, trace)
             result.dense_records = len(dense_records)
@@ -213,6 +227,7 @@ class IngestionPipeline:
             })
 
             # 6. Store
+            _report_progress("upsert", 5)
             self._emit_progress("store", {
                 "dense": len(dense_records),
                 "sparse": len(sparse_vectors),
