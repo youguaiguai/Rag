@@ -242,3 +242,32 @@ class ChromaStore(BaseVectorStore):
         except Exception as e:
             raise VectorStoreError(f"ChromaStore delete_by_metadata 失败: {e}")
 
+    def get_all_records(self, limit: int = 10000) -> list[dict[str, Any]]:
+        """获取所有记录（不含向量，用于文档管理）
+
+        接口签名：get_all_records(limit: int = 10000) -> list[dict]
+        入参：limit — 最大返回数量
+        出参：记录列表（包含 id, text, metadata，不含 embedding）
+        """
+        try:
+            results = self._collection.get(
+                include=["documents", "metadatas"],
+                limit=limit,
+            )
+        except Exception as e:
+            raise VectorStoreError(f"ChromaStore get_all_records 失败: {e}")
+
+        records = []
+        ids = results.get("ids", [])
+        documents = results.get("documents", [])
+        metadatas = results.get("metadatas", [])
+
+        for i, record_id in enumerate(ids):
+            records.append({
+                "id": record_id,
+                "text": documents[i] if i < len(documents) else "",
+                "metadata": metadatas[i] if i < len(metadatas) else {},
+            })
+
+        return records
+

@@ -507,3 +507,54 @@ class BM25Indexer:
         """索引是否已构建（N > 0）"""
         return self._index["N"] > 0
 
+    def remove_document(self, source_path: str) -> int:
+        """按 source_path 删除文档对应的所有 chunk 向量
+
+        接口签名：remove_document(source_path: str) -> int
+        入参：source_path — 文档源路径
+        出参：删除的向量数
+        """
+        if not self.is_built:
+            return 0
+
+        # 找到属于该文档的 chunk_id 列表
+        doc_prefix = f"# chunk="
+        ids_to_remove = [
+            chunk_id for chunk_id in self._index["index"].get("doc_ids", {})
+            if source_path in chunk_id
+        ]
+
+        # 更精确：遍历所有 term 的倒排列表，收集属于该文档的 id
+        removed_count = 0
+        all_chunk_ids = set()
+        for term, posting in self._index.get("index", {}).items():
+            if isinstance(posting, dict):
+                for chunk_id in posting:
+                    if chunk_id.startswith(source_path):
+                        all_chunk_ids.add(chunk_id)
+
+        # 倒序遍历 term 索引清除
+        for chunk_id in all_chunk_ids:
+            for term in list(self._index.get("index", {}).keys()):
+                posting = self._index["index"].get(term, {})
+                if isinstance(posting, dict) and chunk_id in posting:
+                    del posting[chunk_id]
+                    removed_count += 1
+
+        if all_chunk_ids:
+            self._save()
+
+        return len(all_chunk_ids)
+
+    def list_all_chunk_ids(self) -> list[str]:
+        """列出所有 chunk ID（用于文档列表展示）"""
+        if not self.is_built:
+            return []
+
+        all_ids = set()
+        for term, posting in self._index.get("index", {}).items():
+            if isinstance(posting, dict):
+                all_ids.update(posting.keys())
+
+        return sorted(all_ids)
+

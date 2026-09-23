@@ -4724,3 +4724,38 @@ python scripts/start_dashboard.py
 | "Dashboard 作用？" | 运维监控 + 调试 + 数据分析 |
 | "为什么单独启动脚本？" | 封装 streamlit 参数 + 环境检查 |
 | "Overview 展示什么？" | 组件配置卡片（Embedding/VectorStore/Reranker）+ 数据统计 |
+
+
+---
+
+## 50. G2：DocumentManager 实现
+
+### 50.1 设计目标
+
+实现跨存储的文档生命周期管理（list/delete/stats），协调 Chroma + BM25 + FileIntegrity。
+
+### 50.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/ingestion/document_manager.py` | 创建 | DocumentManager |
+| `src/libs/vector_store/chroma_store.py` | 增强 | get_all_records |
+| `src/ingestion/storage/bm25_indexer.py` | 增强 | remove_document + list_all_chunk_ids |
+| `tests/unit/test_document_manager.py` | 创建 | 10 个测试 |
+
+### 50.3 G2 测试覆盖
+
+| 测试类别 | 数量 |
+|---------|------|
+| List Documents | 4 |
+| Delete Document | 4 |
+| Collection Stats | 2 |
+| **G2 合计** | **10 passed** |
+
+### 50.4 G2 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "DocumentManager 的作用？" | 跨存储协调文档生命周期 |
+| "删除的一致性如何保证？" | 尽力而为 + 日志记录，非分布式事务 |
+| "为什么不用分布式事务？" | 本地存储无需 2PC，日志足够 |
