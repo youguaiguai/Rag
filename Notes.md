@@ -4516,3 +4516,40 @@ MCPServer.run() → None
 | "为什么图片用 Base64？" | MCP Stdio 模式无 HTTP 端点，Base64 自包含 |
 | "图片加载失败怎么处理？" | 失败隔离：跳过失败图片，不影响其他内容返回 |
 | "图片去重逻辑？" | 多个 chunk 引用同一张图时通过 dict.fromkeys 去重 |
+
+
+---
+
+## 44. F1：TraceContext 增强 + TraceCollector
+
+### 44.1 设计目标
+
+增强 TraceContext：添加 trace_type/finish/elapsed_ms/to_dict，新增 TraceCollector 收集和持久化。
+
+### 44.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/core/trace/trace_context.py` | 增强 | trace_type, finish, elapsed_ms, to_dict |
+| `src/core/trace/trace_collector.py` | 实现 | TraceCollector (JSONL 持久化) |
+| `src/core/trace/__init__.py` | 更新 | 添加 TraceCollector 导出 |
+| `tests/unit/test_trace_context.py` | 创建 | 20 个测试 |
+| `tests/unit/test_chunk_refiner.py` | 修复 | 适配新 API |
+
+### 44.3 F1 测试覆盖
+
+| 测试类别 | 数量 |
+|---------|------|
+| TraceContext 增强 | 14 |
+| TraceCollector | 6 |
+| **F1 合计** | **20 passed** |
+
+### 44.4 F1 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "trace_type 的作用？" | 区分 query/ingestion，便于按类型分析追踪数据 |
+| "finish() 为什么要分离？" | 关注点分离：finish 改状态，to_dict 做序列化 |
+| "elapsed_ms 和 duration_ms 的区别？" | duration_ms 调用方传入，elapsed_ms 由 TraceContext 计算 |
+| "JSONL 格式优势？" | 每行独立 JSON，支持 append 写入，grep/jq 友好 |
+| "为什么 TraceCollector 单独一个类？" | 解耦 TraceContext 创建和持久化逻辑 |

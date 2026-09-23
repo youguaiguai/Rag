@@ -164,18 +164,19 @@ class TestTraceContext:
         assert stages[0].duration_ms == 12.3
 
     def test_finish_returns_summary(self):
-        """finish 返回可序列化汇总 dict"""
+        """finish + to_dict 返回可序列化汇总 dict"""
         trace = TraceContext(trace_id="test-trace-123")
         trace.record_stage("loader", {"path": "/doc.md"})
         trace.record_stage("chunker", {"count": 3}, duration_ms=5.0)
 
-        summary = trace.finish()
+        trace.finish()
+        summary = trace.to_dict()
 
         assert summary["trace_id"] == "test-trace-123"
         assert len(summary["stages"]) == 2
         assert summary["stages"][0]["stage"] == "loader"
         assert summary["stages"][1]["data"]["count"] == 3
-        assert "total_duration_ms" in summary
+        assert "total_elapsed_ms" in summary
 
 
 # ============================================================
