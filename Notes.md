@@ -4553,3 +4553,36 @@ MCPServer.run() → None
 | "elapsed_ms 和 duration_ms 的区别？" | duration_ms 调用方传入，elapsed_ms 由 TraceContext 计算 |
 | "JSONL 格式优势？" | 每行独立 JSON，支持 append 写入，grep/jq 友好 |
 | "为什么 TraceCollector 单独一个类？" | 解耦 TraceContext 创建和持久化逻辑 |
+
+
+---
+
+## 45. F2：结构化日志 Logger (JSON Lines)
+
+### 45.1 设计目标
+
+增强 observability/logger.py：支持 JSON Lines 格式输出，实现 trace 持久化到 logs/traces.jsonl。
+
+### 45.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/observability/logger.py` | 增强 | JSONFormatter + get_trace_logger + write_trace |
+| `tests/unit/test_jsonl_logger.py` | 创建 | 12 个测试 |
+
+### 45.3 F2 测试覆盖
+
+| 测试类别 | 数量 |
+|---------|------|
+| JSONFormatter | 4 |
+| write_trace | 5 |
+| get_trace_logger | 3 |
+| **F2 合计** | **12 passed** |
+
+### 45.4 F2 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "JSON Lines 格式优势？" | 每行独立 JSON，支持 append 写入，grep/jq 友好 |
+| "为什么 trace 单独一个 logger？" | 关注点分离，trace 数据量大且格式固定 |
+| "write_trace 和 TraceCollector 的关系？" | write_trace 是底层 IO，TraceCollector 是高层抽象 |
