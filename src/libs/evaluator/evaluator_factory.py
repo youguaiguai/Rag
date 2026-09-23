@@ -62,9 +62,22 @@ class EvaluatorFactory:
     """
 
     # Backend → 实现类的映射表
-    _BACKENDS: dict[str, type[BaseEvaluator]] = {
+    _BACKENDS: dict[str, type[BaseEvaluator] | None] = {
         "custom": CustomEvaluator,
+        "ragas": None,  # 延迟导入
     }
+
+    @classmethod
+    def _get_ragas_class(cls) -> type[BaseEvaluator] | None:
+        """延迟加载 RagasEvaluator"""
+        if cls._BACKENDS.get("ragas") is not None:
+            return cls._BACKENDS["ragas"]
+        try:
+            from observability.evaluation.ragas_evaluator import RagasEvaluator
+            cls._BACKENDS["ragas"] = RagasEvaluator
+            return RagasEvaluator
+        except ImportError:
+            return None
 
     @classmethod
     def create(cls, backend: str, **kwargs) -> BaseEvaluator:
@@ -97,6 +110,16 @@ class EvaluatorFactory:
             )
 
         evaluator_class = cls._BACKENDS[backend_lower]
+
+        # 延迟加载 ragas
+        if evaluator_class is None and backend_lower == "ragas":
+            evaluator_class = cls._get_ragas_class()
+
+        if evaluator_class is None:
+            raise EvaluatorError(
+                f"Evaluator backend '{backend}' 不可用。可能缺少依赖。"
+            )
+
         return evaluator_class(**kwargs)
 
     @classmethod

@@ -4910,3 +4910,89 @@ python scripts/start_dashboard.py
 | 历史对比 | 展示历史评估结果（待 H3 实现） |
 
 注：完整功能依赖 H3（EvalRunner）实现。
+
+
+---
+
+## 56. H1：RagasEvaluator + 工厂注册
+
+### 56.1 设计目标
+实现 RagasEvaluator 封装 Ragas 框架，实现 BaseEvaluator 接口。
+
+### 56.2 修改文件
+| 文件 | 说明 |
+|------|------|
+| `src/observability/evaluation/ragas_evaluator.py` | RagasEvaluator |
+| `src/libs/evaluator/evaluator_factory.py` | 注册 ragas（延迟导入） |
+
+### 56.3 H1 测试：4 passed
+
+---
+
+## 57. H2：CompositeEvaluator
+
+### 57.1 设计目标
+实现 CompositeEvaluator，组合多评估器并行执行。
+
+### 57.2 修改文件
+| 文件 | 说明 |
+|------|------|
+| `src/observability/evaluation/composite_evaluator.py` | CompositeEvaluator + create_composite |
+
+### 57.3 H2 测试：5 passed
+
+---
+
+## 58. H3：EvalRunner + Golden Test Set
+
+### 58.1 设计目标
+实现 EvalRunner，读取 golden test set，检索并评估。
+
+### 58.2 修改文件
+| 文件 | 说明 |
+|------|------|
+| `src/observability/evaluation/eval_runner.py` | EvalRunner + EvalReport |
+| `tests/fixtures/golden_test_set.json` | 黄金测试集 |
+| `scripts/evaluate.py` | 评估运行脚本 |
+
+### 58.3 H3 测试：4 passed
+
+---
+
+## 59. H4：评估面板页面
+
+### 59.1 设计目标
+更新 Dashboard 评估面板页面，集成 H3 EvalRunner。
+
+### 59.2 修改文件
+| 文件 | 说明 |
+|------|------|
+| `src/observability/dashboard/pages/evaluation_panel.py` | 完整版页面 |
+
+---
+
+## 60. H5：Recall 回归测试
+
+### 60.1 设计目标
+基于 golden set 做最小召回阈值（hit@k）回归测试。
+
+### 66.2 修改文件
+| 文件 | 说明 |
+|------|------|
+| `tests/e2e/test_recall.py` | 召回率回归测试 |
+| `tests/fixtures/golden_test_set.json` | 更新测试集 |
+
+### 60.3 H5 测试：3 passed (e2e marked)
+
+---
+
+## H 阶段汇总
+
+| 任务 | 测试数 | 状态 |
+|------|--------|------|
+| H1 RagasEvaluator | 4 | ✅ |
+| H2 CompositeEvaluator | 5 | ✅ |
+| H3 EvalRunner | 4 | ✅ |
+| H4 评估面板 | - | ✅ |
+| H5 Recall 回归 | 3 | ✅ |
+| **H 阶段合计** | **16** | ✅ |
