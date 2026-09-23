@@ -4885,3 +4885,28 @@ python scripts/start_dashboard.py
 | "Query Traces 作用？" | 调试召回问题 + 性能分析 |
 | "数据来源？" | TraceService 读取 traces_*.jsonl（F3 打点） |
 | "如何区分 Dense/Sparse 效果？" | 并列对比 result_count |
+
+
+---
+
+## 55. G7：Evaluation 面板页面
+
+### 57.1 设计目标
+
+实现 Dashboard 评估面板页面（运行评估、查看指标、历史对比）。
+
+### 57.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/observability/dashboard/pages/evaluation_panel.py` | 实现 | Evaluation Panel 页面 |
+
+### 57.3 Evaluation Panel 功能
+
+| 功能 | 说明 |
+|------|------|
+| 配置选择 | 选择评估后端 + test set 路径 |
+| 运行评估 | 点击运行，展示 hit_rate、mrr 等指标 |
+| 历史对比 | 展示历史评估结果（待 H3 实现） |
+
+注：完整功能依赖 H3（EvalRunner）实现。
