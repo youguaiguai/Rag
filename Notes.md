@@ -4394,3 +4394,74 @@ MCPServer.run() → None
 | "通知消息怎么处理？" | 无 id 的请求是通知，不返回响应（返回 None） |
 | "能力协商在哪进行？" | initialize 响应中声明 capabilities.tools |
 | "ProtocolHandler 和 MCPServer 的关系？" | Server 做 I/O 循环，ProtocolHandler 做协议解析，解耦设计 |
+
+
+---
+
+## 40. E3：query_knowledge_hub Tool
+
+### 40.1 设计目标
+
+实现 MCP Tool `query_knowledge_hub`：调用 HybridSearch + Reranker，构建带引用的响应，返回 Markdown + structured citations。
+
+### 40.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/core/response/__init__.py` | 更新 | 导出 ResponseBuilder + CitationGenerator |
+| `src/core/response/citation_generator.py` | 实现 | 引用生成器 |
+| `src/core/response/response_builder.py` | 实现 | MCP 响应构建器 |
+| `src/mcp_server/tools/query_knowledge_hub.py` | 实现 | query_knowledge_hub Tool |
+| `tests/unit/test_response_builder.py` | 创建 | 14 个响应构建测试 |
+| `tests/integration/test_mcp_server.py` | 追加 | 3 个 Tool schema 测试 |
+
+### 40.3 E3 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| CitationGenerator | 6 | 生成引用、score 四舍五入、page 缺失、空结果、回退链、多结果 |
+| ResponseBuilder | 8 | MCP 格式、content 类型、citations、Markdown 标注、空结果提示、长文本截断、必需字段 |
+| Tool Schema | 3 | 必需字段、query 必填、collection 可选 |
+| **E3 合计** | **17** | 17 passed |
+
+### 40.4 E3 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "query_knowledge_hub 做了什么？" | 接收查询 → HybridSearch → Reranker → ResponseBuilder → MCP 响应 |
+| "MCP 响应格式？" | content[0]=Markdown 文本，structuredContent.citations=引用列表 |
+| "引用标注 [1] 的作用？" | 让 LLM 标注来源，用户可溯源验证 |
+| "无结果时怎么处理？" | 返回友好提示（建议摄取数据），而非空数组 |
+| "ResponseBuilder 和 CitationGenerator 的关系？" | ResponseBuilder 调用 CitationGenerator 生成引用，再组装 Markdown |
+
+
+---
+
+## 41. E4：list_collections Tool
+
+### 41.1 设计目标
+
+实现 MCP Tool `list_collections`：列出 data/documents/ 下所有文档集合并附带统计信息。
+
+### 41.2 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `src/mcp_server/tools/list_collections.py` | 实现 | list_collections Tool |
+| `tests/unit/test_list_collections.py` | 创建 | 11 个集合列表测试 |
+
+### 41.3 E4 测试覆盖
+
+| 测试类别 | 数量 | 关键测试 |
+|---------|------|---------|
+| Tool Schema | 2 | description、inputSchema |
+| 功能测试 | 9 | MCP 格式、集合识别、文件计数、空目录、不存在目录、Markdown 内容、根目录文件忽略 |
+| **E4 合计** | **11** | 11 passed |
+
+### 41.4 E4 面试问答
+
+| 问题 | 回答 |
+|------|------|
+| "list_collections 做了什么？" | 扫描 data/documents/ 子目录，返回集合名和文件数 |
+| "为什么不返回根目录文件？" | 只有子目录被视为集合，根目录文件不是有效集合 |
+| "目录不存在怎么办？" | 返回空列表（不抛异常），保证可用性 |
