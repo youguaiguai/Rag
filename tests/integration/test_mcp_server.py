@@ -345,3 +345,41 @@ class TestToolsRegistry:
         assert last_response["id"] == 2
         assert "result" in last_response
 
+
+# ============================================================
+# TestQueryKnowledgeHub — query_knowledge_hub Tool 测试
+# ============================================================
+
+class TestQueryKnowledgeHub:
+    """query_knowledge_hub Tool 测试（直接测试，不通过 subprocess）
+
+    知识点：MCP Tool 单元测试
+      - 直接测试 Tool 函数（而非通过 subprocess）
+      - 使用 Mock HybridSearch 控制检索结果
+      - 验证 MCP 响应格式正确
+    """
+
+    def test_tool_schema_has_required_fields(self) -> None:
+        """TOOL_SCHEMA 包含必需字段"""
+        from mcp_server.tools.query_knowledge_hub import TOOL_SCHEMA
+
+        assert "description" in TOOL_SCHEMA
+        assert "inputSchema" in TOOL_SCHEMA
+        assert "properties" in TOOL_SCHEMA["inputSchema"]
+        assert "query" in TOOL_SCHEMA["inputSchema"]["properties"]
+        assert "top_k" in TOOL_SCHEMA["inputSchema"]["properties"]
+
+    def test_tool_schema_query_is_required(self) -> None:
+        """query 是必需参数"""
+        from mcp_server.tools.query_knowledge_hub import TOOL_SCHEMA
+
+        assert "query" in TOOL_SCHEMA["inputSchema"].get("required", [])
+
+    def test_tool_schema_has_collection_optional(self) -> None:
+        """collection 是可选参数"""
+        from mcp_server.tools.query_knowledge_hub import TOOL_SCHEMA
+
+        assert "collection" in TOOL_SCHEMA["inputSchema"]["properties"]
+        # collection 不在 required 列表中
+        assert "collection" not in TOOL_SCHEMA["inputSchema"].get("required", [])
+
